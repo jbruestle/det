@@ -19,6 +19,14 @@ int8 tensor cores (exact byte-sliced P.V).  See the git history / `out/` logs fo
 
 ## Layout
 - `docs/SPEC.md`        numerics specification (normative)
+- `metal/`              Metal implementation (Apple silicon), same C API as `cuda/det.h` in `det_metal.h`:
+                        `det_metal.mm` (runtime: unified-memory buffers, residency set, runtime shader compilation,
+                        dispatch), `shaders/*.metal` (`common.metal` primitives + software denormals, `glue`, `gemm`,
+                        `attn`, `gdn`, `sample`), `make -C metal` builds `libdet_metal.dylib` (no Metal toolchain needed)
+- `python/detmetal.py`  ctypes bindings (shared buffers with numpy views), `detmodel_metal.py` (model runner)
+- `tests/metal/`        Metal bit-exactness suites (`run_tests_metal.sh` runs everything)
+- `tools/*_metal.py`    `metal_compare.py` (vs the numpy reference), `generate_metal.py`, `bench_metal.py`,
+                        `calib_v_metal.py`, `ppl_metal.py`
 - `detref/`             numpy golden reference: `detmath.py` (primitives), `quant.py` (weight format),
                         `model.py` (forward pass), `convert.py` (HF -> det, small models), `sample.py` (sampling)
 - `cuda/`               CUDA implementation: `common.cuh` (device primitives), `norm.cu` (glue), `gemm.cu`,
@@ -47,7 +55,45 @@ make -C cuda
 .venv/bin/python tools/generate.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B "prompt" 200 --chat [--temp 0.8 --seed 1]
 ```
 
+## Metal (Apple silicon)
+`metal/` implements the same `det.h` API (`metal/det_metal.h`: host pointers into unified-memory buffers from
+`det_malloc`, one in-order queue, `det_sync`).  Every kernel suite and the end-to-end 4B check are bit-exact against the
+numpy reference (`./run_tests_metal.sh`), so the logits are identical to the CUDA path's.  Notes:
+* Apple GPUs flush fp32 denormals in every arithmetic op; the Metal primitives emulate IEEE denormals exactly
+  (fast-path check + integer slow path, see `docs/SPEC.md` 8).  All fp32 math goes through them.
+* GEMMs and attention/GDN contractions use the M5 tensor unit (`mpp::tensor_ops::matmul2d`, int8 -> int32, exact);
+  decode GEMMs stream the weights in a tiled layout (`[N/64][K/128][64 rows][group bytes]`, built at load time).
+* Shaders are compiled from source at first use (a few seconds; no Metal toolchain required).
+
+```
+make -C metal && ./run_tests_metal.sh                       # kernel suites + 4B end-to-end bit-exactness
+.venv/bin/python tools/generate_metal.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B "prompt" 200 --chat
+.venv/bin/python tools/bench_metal.py models/qwen38-27b-w6 --pp 512,2048 --tg 128 --depth 0
+.venv/bin/python tools/ppl_metal.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B --ctx 2048 --chunks 8
+```
+
+### Results (M5 Max, 128 GB, macOS 26)
+
+| model | pp512 | pp2048 | tg128 | pp512 @ d4096 | pp2048 @ d4096 | tg128 @ d4096 |
+|---|---|---|---|---|---|---|
+| det Qwen3.8-27B W6 (22.5 GB) | 411 | 429 | 17.4 | 347 | 356 | 16.3 |
+| llama.cpp Qwen3.8-27B Q8_0 (27.1 GB, fa=1) | 778 | 718 | 18.4 | 637 | 587 | 17.7 |
+| det Qwen3.5-4B W6 (dev model) | ~1150 | ~1170 | ~58 | | | |
+
+(tok/s, llama-bench protocol; `tools/bench_metal.py` / `llama-bench -fa 1`.)  Decode is within ~5% of llama.cpp with
+a smaller model file; prefill is ~1.8x slower (the int8 tensor-unit path reaches ~34 TOPS, and prefill attention does
+its P.V product with int64 multiply-adds on the ALUs rather than on the matrix unit: the next optimization target).
+The 4B decode is dispatch-latency bound (~390 dependent dispatches per token at ~15 us each).  Perplexity (wikitext-2,
+llama-perplexity protocol, ctx 2048): 4.911 over the first 8 chunks; the numerics are bit-identical to the CUDA path, so
+the full-set figure is the README's 6.000-6.004 (W6 everywhere here, no W8 out/down).
+
+Kernel level (tests/metal/test_gemm.py bench, bench_kernels): decode GEMM streams W6 weights at 450-490 GB/s and W8 at
+~585 GB/s (614 GB/s peak); prefill GEMM ~34 TOPS (int8 tensor unit); GDN recurrence 14 us/token/layer (27B shape, M >= 64);
+attention (scores on the tensor unit) 77 us (1k context) / 200 us (8k) / 450 us (32k) per layer at M=1, and 8 / 55 / 235 us per
+token at M=64.  Logits are bit-identical to the numpy
+reference for every configuration tested (one-shot vs chunked prefill, decode), hence to the CUDA path.
+
 ## Status / next
-NVIDIA path complete (sm_80/89/120 builds).  Determinism has been demonstrated on one GPU against the CPU
-reference; cross-generation runs on other NVIDIA cards are the next validation.  A Metal backend behind the same
-`det.h` API is planned; the first step there is a bit-exactness test of the fp32 primitives (and denormals).
+NVIDIA path complete (sm_80/89/120 builds); Metal path complete and bit-identical to it (same numpy reference).
+Determinism has been demonstrated on one GPU per vendor against the CPU reference; cross-generation runs on other
+NVIDIA cards and other Apple chips are the next validation.
