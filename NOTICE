@@ -1,0 +1,5 @@
+det — deterministic inference kernels.
+
+The fp32 exp/log polynomial approximations in detref/detmath.py and cuda/common.cuh are derived from the
+Cephes Mathematical Library (Stephen L. Moshier), used here as explicit, fixed op sequences so that every
+implementation reproduces them bit-for-bit.

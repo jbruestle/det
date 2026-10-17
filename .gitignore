@@ -1,0 +1,9 @@
+.venv/
+models/
+dl/
+out/
+cuda/*.o
+cuda/*.so
+__pycache__/
+*.pyc
+*.npz
