@@ -80,10 +80,14 @@ make -C metal && ./run_tests_metal.sh                       # kernel suites + 4B
 | llama.cpp Qwen3.8-27B Q8_0 (27.1 GB, fa=1) | 778 | 718 | 18.4 | 637 | 587 | 17.7 |
 | det Qwen3.5-4B W6 (dev model) | ~1150 | ~1170 | ~58 | | | |
 
+Long context (27B, batch 2048, det / llama.cpp Q8_0): prefill 131072 tokens from empty 177 / 223 tok/s; prefill 2048
+tokens at depth 32768 294 / - tok/s; prefill 512 tokens at depth 131072 98 / 132 tok/s; decode at depth 131072 13.2 /
+13.2 tok/s.  Decode is at parity at every depth; long-context prefill is within 1.3x (the prefill attention path runs
+scores and P.V on the tensor unit with 7-bit probability slices; see metal/shaders/attn.metal).
+
 (tok/s, llama-bench protocol; `tools/bench_metal.py` / `llama-bench -fa 1`.)  Decode is within ~3% of llama.cpp with
-a smaller model file and prefill is at parity (pp4096: 675 tok/s at depth 0).  The int8 tensor-unit GEMM reaches ~55
-TOPS with 32-row tiles; prefill attention keeps its P.V product on the ALUs (int64), because on this chip the matrix unit
-needs 128-deep contractions to be efficient and the exact 24-bit x 16-bit product would need 8-12x operand slicing.
+a smaller model file and short-context prefill is at parity (pp4096: 675 tok/s at depth 0).  The int8 tensor-unit GEMM
+reaches ~55 TOPS with 32-row tiles.
 The 4B decode is dispatch-latency bound (~390 dependent dispatches per token at ~15 us each).  Perplexity (wikitext-2 test, llama-perplexity
 protocol, ctx 2048, HF tokenization of the raw text, V scales from `tools/calib_v_metal.py`): 6.193 over the full set
 (`tools/ppl_metal.py`).  The numerics are bit-identical to the CUDA path for identical inputs and V scales; the gap to the
@@ -91,8 +95,8 @@ protocol, ctx 2048, HF tokenization of the raw text, V scales from `tools/calib_
 
 Kernel level (tests/metal/test_gemm.py bench, bench_kernels): decode GEMM streams W6 weights at 450-490 GB/s and W8 at
 ~585 GB/s (614 GB/s peak); prefill GEMM ~55 TOPS (int8 tensor unit, 32x64 tiles); GDN recurrence 7 us/token/layer (27B shape, M >= 64);
-attention (scores on the tensor unit) 77 us (1k context) / 200 us (8k) / 450 us (32k) per layer at M=1, and 8 / 55 / 235 us per
-token at M=64.  Logits are bit-identical to the numpy
+attention 77 us (1k context) / 200 us (8k) / 450 us (32k) per layer at M=1 (scores on the tensor unit, P.V on the ALUs),
+and 7 / 34 / 137 us per token at M=64 (prefill path: scores and P.V on the tensor unit).  Logits are bit-identical to the numpy
 reference for every configuration tested (one-shot vs chunked prefill, decode), hence to the CUDA path.
 
 ## Status / next

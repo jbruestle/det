@@ -17,8 +17,8 @@ typedef struct { uint64_t wq, c, m, xq, sx, mx, y, part, counters; uint64_t ydst
 typedef struct { uint64_t qkv, conv_state, conv_w, a, b, A, dt_bias, y, beta, decay; float eps; int t0, conv_dim, kd, n_v; } det_p_gdn_prep;
 typedef struct { uint64_t y, beta, decay, S, o; int M, conv_dim, kd, n_v, rep; } det_p_gdn_recur;
 typedef struct { uint64_t o, z, norm, on, qkv, conv_state; float eps; int nrows, nblk_out, M, conv_dim; } det_p_gdn_out;
-typedef struct { uint64_t qg, k, v, q_norm, k_norm, v_scale, v_inv_scale, rope_cos, rope_sin, qq, sq, mx, kq, sk, vq, o, num, den;
-                 float eps, qscale; int rot, M, pos0, n_h, n_kv, nsplit; } det_p_attn;
+typedef struct { uint64_t qg, k, v, q_norm, k_norm, v_scale, v_inv_scale, rope_cos, rope_sin, qq, sq, mx, kq, sk, vq, o, num, den, vlo, vhi;
+                 float eps, qscale; int rot, M, pos0, n_h, n_kv, nsplit, pre; } det_p_attn;
 typedef struct { uint64_t logits, keys, mx, hist, part, state, z, out; float inv_temp; int V, top_k, digit, nblk; uint64_t p24; int use_k, use_p; } det_p_smp;
 typedef struct { uint64_t src, dst; int N, off, n, T; } det_p_copycols;
 typedef struct { uint64_t src, dst[4]; int off[4], n[4]; int N, T, nparts; } det_p_splitcols;

@@ -23,7 +23,7 @@ class QLinear(ctypes.Structure):
 class AttnLayer(ctypes.Structure):
     _fields_ = [("q_norm", vp), ("k_norm", vp), ("v_scale", vp), ("v_inv_scale", vp)]
 class KVCache(ctypes.Structure):
-    _fields_ = [("kq", vp), ("sk", vp), ("vq", vp), ("capacity", c_int)]
+    _fields_ = [("kq", vp), ("sk", vp), ("vq", vp), ("capacity", c_int), ("vlo", vp), ("vhi", vp)]
 class GdnLayer(ctypes.Structure):
     _fields_ = [("conv", vp), ("A", vp), ("dt_bias", vp), ("norm", vp)]
 class GdnState(ctypes.Structure):

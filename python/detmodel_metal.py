@@ -59,7 +59,8 @@ class MetalModel:
                 keep = [up(n + "q_norm"), up(n + "k_norm"), vs, vis]
                 ly["al"] = D.AttnLayer(*[D.P(x) for x in keep]); ly["keep"] = keep
                 kq = D.zeros((max_ctx, self.n_kv, self.hd), np.int8); sk = D.zeros((max_ctx, self.n_kv)); vq = D.zeros((max_ctx, self.n_kv, self.hd), np.int16)
-                ly["kv"] = D.KVCache(D.P(kq), D.P(sk), D.P(vq), max_ctx); ly["kv_t"] = (kq, sk, vq)
+                vlo = D.zeros((max_ctx, self.n_kv, self.hd), np.int8); vhi = D.zeros((max_ctx, self.n_kv, self.hd), np.int8)
+                ly["kv"] = D.KVCache(D.P(kq), D.P(sk), D.P(vq), max_ctx, D.P(vlo), D.P(vhi)); ly["kv_t"] = (kq, sk, vq, vlo, vhi)
             else:
                 ly.update(qkvz_f=lin_fused([n + "qkv", n + "z"]), ab_f=lin_fused([n + "a", n + "b"]), out=lin(n + "out"))
                 keep = [up(n + "conv"), up(n + "A"), up(n + "dt_bias"), up(n + "gdn_norm")]

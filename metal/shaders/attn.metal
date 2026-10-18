@@ -17,11 +17,12 @@ using namespace mpp::tensor_ops;
 #define P_FIX 16777216.0f
 inline uint f2ord(float f) { uint u = as_type<uint>(f); return (u & 0x80000000u) ? ~u : (u | 0x80000000u); }
 inline float ord2f(uint u) { return as_type<float>((u & 0x80000000u) ? (u & 0x7fffffffu) : ~u); }
-inline void key_range(int nkeys, int nsplit, int split, thread int& j0, thread int& j1) {
-    int chunk = ((nkeys + nsplit - 1) / nsplit + ATK - 1) / ATK * ATK;
+inline void key_range_t(int nkeys, int nsplit, int split, int tk, thread int& j0, thread int& j1) {
+    int chunk = ((nkeys + nsplit - 1) / nsplit + tk - 1) / tk * tk;
     j0 = split * chunk;
     j1 = min(nkeys, j0 + chunk);
 }
+inline void key_range(int nkeys, int nsplit, int split, thread int& j0, thread int& j1) { key_range_t(nkeys, nsplit, split, ATK, j0, j1); }
 
 // ---- prep: rows [0, M*n_h) = q, [M*n_h, M*n_h + M*n_kv) = k, then v.  CHUNK = HD/32 contiguous elements per lane.
 #define DET_ATTN_PREP(HD)                                                                                             \
@@ -71,10 +72,13 @@ kernel void k_attn_prep_##HD(constant det_p_attn& p [[buffer(0)]], uint bid [[th
         device const float* src = (device const float*)p.v + ((ulong)t * n_kv + hh) * HD;                             \
         const float vinv = ((device const float*)p.v_inv_scale)[hh];                                                  \
         device short* dst = (device short*)p.vq + ((ulong)pos * n_kv + hh) * HD;                                      \
+        device char* dlo = p.vlo ? (device char*)p.vlo + ((ulong)pos * n_kv + hh) * HD : (device char*)0;             \
+        device char* dhi = p.vhi ? (device char*)p.vhi + ((ulong)pos * n_kv + hh) * HD : (device char*)0;                                      \
         DET_U_ATTN for (int i = 0; i < CHUNK; i++) {                                                                             \
             int q = rint_i(mul(src[lane * CHUNK + i], vinv));                                                         \
             q = q > 32767 ? 32767 : (q < -32767 ? -32767 : q);                                                        \
             dst[lane * CHUNK + i] = (short)q;                                                                         \
+            if (dlo) { dlo[lane * CHUNK + i] = (char)((q & 255) - 128); dhi[lane * CHUNK + i] = (char)(q >> 8); }                                                                         \
         }                                                                                                             \
     }                                                                                                                 \
 }
@@ -264,6 +268,193 @@ kernel void k_attn_acc_##HD##_##REP(constant det_p_attn& p [[buffer(0)]], uint3 
 DET_ATTN_KERNELS(256, 1) DET_ATTN_KERNELS(256, 2) DET_ATTN_KERNELS(256, 3) DET_ATTN_KERNELS(256, 4) DET_ATTN_KERNELS(256, 6) DET_ATTN_KERNELS(256, 8)
 DET_ATTN_KERNELS(128, 1) DET_ATTN_KERNELS(128, 2) DET_ATTN_KERNELS(128, 4) DET_ATTN_KERNELS(128, 8)
 
+// ---- prefill path (M >= 16): row-batched blocks, 128-key tiles, P.V on the tensor unit.  A threadgroup owns one
+// kv head, a tile of PR = 16 rows = NTOK tokens x REP heads (t-major), one key split and (k_attn_pacc) one 128-dim
+// half of the output; it streams its keys in tiles of 128:  scores = one 16 x 128 x HD int8 matmul (q tile in
+// threadgroup memory, K rows straight from the cache); P.V: pq (<= 2^24) split into 4 slices of 7 bits (int8-safe,
+// slices that are all zero in a tile are skipped: their products are zero), V as the (vl - 128, vh) int8 planes of the
+// cache, 8 int8 matmuls (16 x 128 x 128) per tile whose int32 results are widened into per-thread int64 accumulators
+// with the slice shifts; the vl offset is undone with 128 * den.  Every contraction is exact.  Blocks run heavy-first;
+// the dim halves keep the accumulator registers low enough for several threadgroups per core (measured 1.15x).
+#define PR 16
+#define PTK 128
+#define PCAP_S 16
+#define PCAP_V 16
+#define PDC 128      /* dims per P.V op */
+#define DET_ATTN_PRE_SETUP(HD, REP)                                                                                   \
+    const int n_h = p.n_h, n_kv = p.n_kv, M = p.M, pos0 = p.pos0;                                                     \
+    const int kvh = (int)tgid.x % n_kv, dh = (int)tgid.x / n_kv;   /* dh: dim half (pacc only; pmax grid.x == n_kv) */ \
+    constexpr int NTOK = PR / REP;                                                                                    \
+    const int ntiles = (M + NTOK - 1) / NTOK;                                                                         \
+    const int tile = ntiles - 1 - (int)tgid.y;            /* heavy first */                                           \
+    const int t0 = tile * NTOK;                                                                                       \
+    const int ntok = min(NTOK, M - t0);                                                                               \
+    const int h0 = kvh * REP;                                                                                         \
+    const int kmax = pos0 + t0 + ntok - 1;                /* last key of the block */                                 \
+    int j0, j1; key_range_t(kmax + 1, p.nsplit, tgid.z, PTK, j0, j1);                                                 \
+    for (int w = tid; w < PR * HD / 4; w += ANT) {                                                                    \
+        const int i = w / (HD / 4), col = w % (HD / 4);                                                               \
+        const int tok = i / REP, r = i % REP;                                                                         \
+        uint v = 0u;                                                                                                  \
+        if (i < NTOK * REP && tok < ntok) v = ((device const uint*)((device const char*)p.qq + ((ulong)(t0 + tok) * n_h + h0 + r) * HD))[col]; \
+        qs[w] = v;                                                                                                    \
+    }                                                                                                                 \
+    if ((int)tid < PR) {   /* per-row scale, key limit (-1: padding row) and max, in threadgroup memory */           \
+        const int i = tid, tok = i / REP, r = i % REP;                                                                \
+        const bool ok = i < NTOK * REP && tok < ntok;                                                                 \
+        sqv[i] = ok ? ((device const float*)p.sq)[(ulong)(t0 + tok) * n_h + h0 + r] : 0.0f;                           \
+        lim[i] = ok ? (pos0 + t0 + tok) : -1;                                                                         \
+        mxv[i] = ok ? ord2f(((device const uint*)p.mx)[(ulong)(t0 + tok) * n_h + h0 + r]) : 0.0f;                     \
+    }                                                                                                                 \
+    constexpr auto dS = matmul2d_descriptor(PR, PTK, HD, false, true, false);                                         \
+    matmul2d<dS, execution_simdgroups<4>> opS;                                                                        \
+    using TQ = tensor<threadgroup int8_t, dextents<int32_t, 2>, tensor_inline>;                                       \
+    using TK = tensor<device int8_t, dextents<int32_t, 2>, tensor_inline>;                                            \
+    auto cS = opS.get_destination_cooperative_tensor<TQ, TK, int32_t>();                                              \
+    auto tQ = tensor((threadgroup int8_t*)qs, dextents<int32_t, 2>(HD, PR), array<int32_t, 2>{1, HD});               \
+    device const char* kq = (device const char*)p.kq;                                                                 \
+    device const float* sk = (device const float*)p.sk;                                                               \
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+#define DET_ATTN_PMAX(HD, REP)                                                                                        \
+kernel void k_attn_pmax_##HD##_##REP(constant det_p_attn& p [[buffer(0)]], uint3 tgid [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) { \
+    threadgroup uint qs[PR * HD / 4];                                                                                 \
+    threadgroup float sqv[PR]; threadgroup int lim[PR]; threadgroup float mxv[PR];                                    \
+    threadgroup atomic_uint bm[PR];                                                                                   \
+    if ((int)tid < PR) atomic_store_explicit(&bm[tid], 0u, memory_order_relaxed);                                     \
+    DET_ATTN_PRE_SETUP(HD, REP)                                                                                       \
+    float lm[PR];                                                                                                     \
+    for (int i = 0; i < PR; i++) lm[i] = -INFINITY;                                                                   \
+    for (int j = j0; j < j1; j += PTK) {                                                                              \
+        const int nvalid = min(PTK, j1 - j);                                                                          \
+        auto tK = tensor((device int8_t*)(kq + ((ulong)j * n_kv + kvh) * HD), dextents<int32_t, 2>(HD, nvalid), array<int32_t, 2>{1, n_kv * HD}); \
+        for (int e = 0; e < PCAP_S; e++) if (e < (int)cS.get_capacity() && cS.is_valid_element(e)) cS[e] = 0;        \
+        opS.run(tQ, tK, cS);                                                                                          \
+        for (int e = 0; e < PCAP_S; e++) {                                                                            \
+            if (e < (int)cS.get_capacity() && cS.is_valid_element(e)) {                                               \
+                auto idx = cS.get_multidimensional_index(e);                                                          \
+                const int kk = idx[0], i = idx[1];                                                                    \
+                if (kk < nvalid && j + kk <= lim[i]) {                                                                \
+                    const float sc = mul(mul((float)cS[e], sqv[i]), sk[(ulong)(j + kk) * n_kv + kvh]);               \
+                    lm[i] = fmax_(lm[i], sc);                                                                         \
+                }                                                                                                     \
+            }                                                                                                         \
+        }                                                                                                             \
+    }                                                                                                                 \
+    for (int i = 0; i < PR; i++) atomic_fetch_max_explicit(&bm[i], f2ord(lm[i]), memory_order_relaxed);               \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                                                                  \
+    if ((int)tid < PR && lim[tid] >= 0) {                                                                             \
+        const int tok = tid / REP, r = tid % REP;                                                                     \
+        atomic_fetch_max_explicit((device atomic_uint*)p.mx + (ulong)(t0 + tok) * n_h + h0 + r, atomic_load_explicit(&bm[tid], memory_order_relaxed), memory_order_relaxed); \
+    }                                                                                                                 \
+}
+
+#define DET_ATTN_PACC(HD, REP)                                                                                        \
+kernel void k_attn_pacc_##HD##_##REP(constant det_p_attn& p [[buffer(0)]], uint3 tgid [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) { \
+    threadgroup uint qs[PR * HD / 4];                                                                                 \
+    threadgroup float sqv[PR]; threadgroup int lim[PR]; threadgroup float mxv[PR];                                    \
+    threadgroup int8_t Ps[4][PR * PTK];                                                                               \
+    threadgroup long dens[PR];                                                                                        \
+    DET_ATTN_PRE_SETUP(HD, REP)                                                                                       \
+    constexpr auto dV = matmul2d_descriptor(PR, PDC, PTK, false, false, false);                                        \
+    matmul2d<dV, execution_simdgroups<4>> opV;                                                                        \
+    using TP = tensor<threadgroup int8_t, dextents<int32_t, 2>, tensor_inline>;                                       \
+    using TV = tensor<device int8_t, dextents<int32_t, 2>, tensor_inline>;                                            \
+    auto cV = opV.get_destination_cooperative_tensor<TP, TV, int32_t>();                                              \
+    device int8_t* vlo = (device int8_t*)p.vlo;                                                                       \
+    device int8_t* vhi = (device int8_t*)p.vhi;                                                                       \
+    threadgroup int nz[4];                                                                                            \
+    long acc[1][PCAP_V];                                            /* this threadgroup's PDC dims only */          \
+    for (int c = 0; c < 1; c++) for (int e = 0; e < PCAP_V; e++) acc[c][e] = 0;                                 \
+    long den_part = 0;                                                                                                \
+    const int drow = tid / 8, dpart = tid % 8;                                                                        \
+    for (int j = j0; j < j1; j += PTK) {                                                                              \
+        const int nvalid = min(PTK, j1 - j);                                                                          \
+        auto tK = tensor((device int8_t*)(kq + ((ulong)j * n_kv + kvh) * HD), dextents<int32_t, 2>(HD, nvalid), array<int32_t, 2>{1, n_kv * HD}); \
+        for (int e = 0; e < PCAP_S; e++) if (e < (int)cS.get_capacity() && cS.is_valid_element(e)) cS[e] = 0;        \
+        opS.run(tQ, tK, cS);                                                                                          \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                                                              \
+        if (tid < 4) nz[tid] = 0;                                                                                     \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                                                              \
+        int pmax_t = 0;                                                                                               \
+        for (int e = 0; e < PCAP_S; e++) {                                                                            \
+            if (e < (int)cS.get_capacity() && cS.is_valid_element(e)) {                                               \
+                auto idx = cS.get_multidimensional_index(e);                                                          \
+                const int kk = idx[0], i = idx[1];                                                                    \
+                int pv = 0;                                                                                           \
+                if (kk < nvalid && j + kk <= lim[i]) {                                                                \
+                    const float sc = mul(mul((float)cS[e], sqv[i]), sk[(ulong)(j + kk) * n_kv + kvh]);               \
+                    pv = rint_i(mul(exp_f(sub(sc, mxv[i])), P_FIX));                                                 \
+                }                                                                                                     \
+                Ps[0][i * PTK + kk] = (int8_t)(pv & 127); Ps[1][i * PTK + kk] = (int8_t)((pv >> 7) & 127);            \
+                Ps[2][i * PTK + kk] = (int8_t)((pv >> 14) & 127); Ps[3][i * PTK + kk] = (int8_t)((pv >> 21) & 127);   \
+                pmax_t = max(pmax_t, pv);                                                                             \
+            }                                                                                                         \
+        }                                                                                                             \
+        pmax_t = simd_max(pmax_t);                                                                                    \
+        if ((tid & 31) == 0) { if (pmax_t >= (1 << 7)) nz[1] = 1; if (pmax_t >= (1 << 14)) nz[2] = 1; if (pmax_t >= (1 << 21)) nz[3] = 1; if (pmax_t > 0) nz[0] = 1; } \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                                                              \
+        {                                                                                                             \
+            long d = 0;                                                                                               \
+            for (int kk = dpart * 16; kk < dpart * 16 + 16; kk++) {                                                   \
+                const int o = drow * PTK + kk;                                                                        \
+                d += (long)Ps[0][o] + ((long)Ps[1][o] << 7) + ((long)Ps[2][o] << 14) + ((long)Ps[3][o] << 21);        \
+            }                                                                                                         \
+            den_part += d;                                                                                            \
+        }                                                                                                             \
+        for (int c = 0; c < 1; c++) {                                                                                 \
+            for (int a = 0; a < 4; a++) {                                                                             \
+                if (!nz[a]) continue;              /* slice all zero in this tile: its products are zero */          \
+                auto tP = tensor((threadgroup int8_t*)Ps[a], dextents<int32_t, 2>(PTK, PR), array<int32_t, 2>{1, PTK}); \
+                for (int pl = 0; pl < 2; pl++) {                                                                      \
+                    device int8_t* vb = (pl ? vhi : vlo) + ((ulong)j * n_kv + kvh) * HD + dh * PDC;                   \
+                    auto tV = tensor(vb, dextents<int32_t, 2>(PDC, nvalid), array<int32_t, 2>{1, n_kv * HD});         \
+                    for (int e = 0; e < PCAP_V; e++) if (e < (int)cV.get_capacity() && cV.is_valid_element(e)) cV[e] = 0; \
+                    opV.run(tP, tV, cV);                                                                              \
+                    const int sh = 7 * a + 8 * pl;                                                                    \
+                    for (int e = 0; e < PCAP_V; e++) if (e < (int)cV.get_capacity() && cV.is_valid_element(e)) acc[c][e] += ((long)cV[e]) << sh; \
+                }                                                                                                     \
+            }                                                                                                         \
+        }                                                                                                             \
+    }                                                                                                                 \
+    for (int o = 1; o < 8; o <<= 1) {                                                                                 \
+        uint lo = (uint)den_part, hi = (uint)((ulong)den_part >> 32);                                                 \
+        lo = simd_shuffle_xor(lo, (ushort)o); hi = simd_shuffle_xor(hi, (ushort)o);                                   \
+        den_part += (long)(((ulong)hi << 32) | lo);                                                                   \
+    }                                                                                                                 \
+    if (dpart == 0) dens[drow] = den_part;                                                                            \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                                                                  \
+    device float* o = (device float*)p.o;                                                                             \
+    device const float* qg = (device const float*)p.qg;                                                               \
+    const float vs = ((device const float*)p.v_scale)[kvh];                                                           \
+    device long* num_p = (device long*)p.num + (ulong)tgid.z * ((ulong)M * n_h * HD);                                 \
+    device long* den_p = (device long*)p.den + (ulong)tgid.z * ((ulong)M * n_h);                                      \
+    for (int c = 0; c < 1; c++) {                                                                                     \
+        for (int e = 0; e < PCAP_V; e++) {                                                                            \
+            if (e < (int)cV.get_capacity() && cV.is_valid_element(e)) {                                               \
+                auto idx = cV.get_multidimensional_index(e);                                                          \
+                const int d = dh * PDC + idx[0], i = idx[1];                                                            \
+                if (lim[i] < 0) continue;                                                                             \
+                const int tok = i / REP, r = i % REP;                                                                 \
+                const long den = dens[i];                                                                             \
+                const long num = acc[c][e] + 128 * den;                                                               \
+                const ulong hrow = (ulong)(t0 + tok) * n_h + h0 + r;                                                  \
+                if (p.nsplit == 1) {                                                                                  \
+                    const float ov = mul(div((float)num, (float)den), vs);                                            \
+                    const float gate = qg[hrow * 2 * HD + HD + d];                                                    \
+                    o[hrow * HD + d] = mul(ov, sigmoid_f(gate));                                                      \
+                } else {                                                                                              \
+                    num_p[hrow * HD + d] = num;                                                                       \
+                    if (d == 0) den_p[hrow] = den;                                                                    \
+                }                                                                                                     \
+            }                                                                                                         \
+        }                                                                                                             \
+    }                                                                                                                 \
+}
+#define DET_ATTN_PRE_KERNELS(HD, REP) DET_ATTN_PMAX(HD, REP) DET_ATTN_PACC(HD, REP)
+DET_ATTN_PRE_KERNELS(256, 1) DET_ATTN_PRE_KERNELS(256, 2) DET_ATTN_PRE_KERNELS(256, 3) DET_ATTN_PRE_KERNELS(256, 4) DET_ATTN_PRE_KERNELS(256, 6) DET_ATTN_PRE_KERNELS(256, 8)
+DET_ATTN_PRE_KERNELS(128, 1) DET_ATTN_PRE_KERNELS(128, 2) DET_ATTN_PRE_KERNELS(128, 4) DET_ATTN_PRE_KERNELS(128, 8)
+
 // ---- finalize (split case): sum the split partials, o = ((float)num / (float)den) * v_scale * sigmoid(gate).
 // grid M*n_h threadgroups, HD threads.  Splits beyond the key count wrote nothing; only splits with j0 < nkeys count.
 #define DET_ATTN_FIN(HD)                                                                                              \
@@ -273,7 +464,7 @@ kernel void k_attn_fin_##HD(constant det_p_attn& p [[buffer(0)]], uint row [[thr
     const ulong stride_num = (ulong)p.M * n_h * HD, stride_den = (ulong)p.M * n_h;                                    \
     long num = 0, den = 0;                                                                                            \
     for (int s = 0; s < p.nsplit; s++) {                                                                              \
-        int j0, j1; key_range(nkeys, p.nsplit, s, j0, j1);                                                            \
+        int j0, j1; key_range_t(nkeys, p.nsplit, s, p.pre ? PTK : ATK, j0, j1);                                       \
         if (j0 >= j1) break;                                                                                          \
         num += ((device const long*)p.num)[s * stride_num + (ulong)row * HD + d];                                     \
         if (d == 0) den += ((device const long*)p.den)[s * stride_den + row];                                         \

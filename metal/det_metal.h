@@ -56,7 +56,9 @@ void det_gemm_set_scratch(void* p, size_t bytes);   // Metal: scratch of det_gem
 typedef struct {
     const float* q_norm; const float* k_norm; const float* v_scale; const float* v_inv_scale;
 } det_attn_layer;
-typedef struct { int8_t* kq; float* sk; int16_t* vq; int capacity; } det_kv_cache;
+// Metal extension: besides the int16 vq, the cache holds V as two int8 planes vlo = (vq & 255) - 128 and vhi = vq >> 8
+// (same [pos][n_kv][hd] layout), written by det_attention with the int16 values; the prefill attention path reads them.
+typedef struct { int8_t* kq; float* sk; int16_t* vq; int capacity; int8_t* vlo; int8_t* vhi; } det_kv_cache;
 void det_attention(const det_attn_layer* L, const det_kv_cache* kv, const float* qg, const float* k, const float* v,
                    const float* rope_cos, const float* rope_sin, int rot, float eps,
                    int M, int pos0, int n_h, int n_kv, int hd, float* o, void* scratch, det_stream_t st);

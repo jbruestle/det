@@ -36,7 +36,8 @@ class Setup:
                       cos=D.to_dev(self.cos), sin=D.to_dev(self.sin))
         self.L = D.AttnLayer(D.P(self.d["q_norm"]), D.P(self.d["k_norm"]), D.P(self.d["v_scale"]), D.P(self.d["v_inv_scale"]))
         self.kq = D.zeros((capacity, n_kv, hd), np.int8); self.sk = D.zeros((capacity, n_kv)); self.vq = D.zeros((capacity, n_kv, hd), np.int16)
-        self.kv = D.KVCache(D.P(self.kq), D.P(self.sk), D.P(self.vq), capacity)
+        self.vlo = D.zeros((capacity, n_kv, hd), np.int8); self.vhi = D.zeros((capacity, n_kv, hd), np.int8)
+        self.kv = D.KVCache(D.P(self.kq), D.P(self.sk), D.P(self.vq), capacity, D.P(self.vlo), D.P(self.vhi))
         self.st = dict(kq=[], sk=[], vq=[]); self.pos = 0; self.scratch = {}
     def random_inputs(self, M, r=rng, vbig=False):
         qg = (r.randn(M, self.n_h * 2 * self.hd) * 2).astype(f32)
@@ -50,6 +51,7 @@ class Setup:
         sk = (10 ** r.uniform(-3, -1, size=(n, self.n_kv))).astype(f32)
         vq = r.randint(-32767, 32768, size=(n, self.n_kv, self.hd)).astype(np.int16)
         D.sync(); self.kq.np[:n] = kq; self.sk.np[:n] = sk; self.vq.np[:n] = vq
+        self.vlo.np[:n] = ((vq.astype(np.int32) & 255) - 128).astype(np.int8); self.vhi.np[:n] = (vq.astype(np.int32) >> 8).astype(np.int8)
         for i in range(n): self.st["kq"].append(kq[i]); self.st["sk"].append(sk[i]); self.st["vq"].append(vq[i])
         self.pos = n
     def step(self, qg, k, v, check=True, label=""):
@@ -67,6 +69,8 @@ class Setup:
             ok &= chk(f"kq  {tag}", self.kq.np[pos0:pos0 + M], np.stack(self.st["kq"][pos0:pos0 + M]))
             ok &= chk(f"sk  {tag}", self.sk.np[pos0:pos0 + M], np.stack(self.st["sk"][pos0:pos0 + M]))
             ok &= chk(f"vq  {tag}", self.vq.np[pos0:pos0 + M], np.stack(self.st["vq"][pos0:pos0 + M]))
+            vref = np.stack(self.st["vq"][pos0:pos0 + M]).astype(np.int32)
+            ok &= chk(f"vlo {tag}", self.vlo.np[pos0:pos0 + M], ((vref & 255) - 128).astype(np.int8)) and chk(f"vhi {tag}", self.vhi.np[pos0:pos0 + M], (vref >> 8).astype(np.int8))
             n = pos0 + M
             ok &= chk(f"kq* {tag}", self.kq.np[:n], np.stack(self.st["kq"]))
         self.pos += M

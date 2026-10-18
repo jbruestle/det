@@ -57,11 +57,32 @@ void det_attention(const det_attn_layer* L, const det_kv_cache* kv, const float*
         if (nsplit < 1) nsplit = 1;
     }
     det_p_attn p = { gpu(qg), gpu(k), gpu(v), gpu(L->q_norm), gpu(L->k_norm), gpu(L->v_scale), gpu(L->v_inv_scale), gpu(rope_cos), gpu(rope_sin),
-                     gpu(S.qq), gpu(S.sq), gpu(S.mx), gpu(kv->kq), gpu(kv->sk), gpu(kv->vq), gpu(o), gpu_or_zero(S.num), gpu_or_zero(S.den),
-                     eps, (float)(1.0 / sqrt((double)hd)), rot, M, pos0, n_h, n_kv, nsplit };
+                     gpu(S.qq), gpu(S.sq), gpu(S.mx), gpu(kv->kq), gpu(kv->sk), gpu(kv->vq), gpu(o), gpu_or_zero(S.num), gpu_or_zero(S.den), gpu_or_zero(kv->vlo), gpu_or_zero(kv->vhi),
+                     eps, (float)(1.0 / sqrt((double)hd)), rot, M, pos0, n_h, n_kv, nsplit, 0 };
     const std::string hds = std::to_string(hd), sfx = hds + "_" + std::to_string(rep);
     const int rows = M * n_h + 2 * M * n_kv;
     dispatch(("k_attn_prep_" + hds).c_str(), &p, sizeof p, MTLSizeMake((rows + 7) / 8, 1, 1), MTLSizeMake(256, 1, 1));
+    // prefill path (row-batched blocks, 128-key tiles, P.V on the tensor unit): M >= DET_ATTN_PRE_MIN (env; 0 = off)
+    static const int pre_min = getenv("DET_ATTN_PRE") ? atoi(getenv("DET_ATTN_PRE")) : 16;   // DET_ATTN_PRE=0 disables
+    if (pre_min > 0 && M >= pre_min && kv->vlo && kv->vhi) {
+        const int ntok = 16 / rep, ntiles = (M + ntok - 1) / ntok;
+        // key splits so that there are enough threadgroups for the cores (int64 partials need the split scratch: M <= MSPLIT)
+        int ps = 1;
+        if (M <= MSPLIT) {
+            ps = (512 + n_kv * ntiles - 1) / (n_kv * ntiles);
+            const int maxs = (pos0 + M + 127) / 128;
+            if (ps > maxs) ps = maxs;
+            if (ps > nsplit_max(M)) ps = nsplit_max(M);
+            if (ps < 1) ps = 1;
+        }
+        p.nsplit = ps; p.pre = 1;
+        const MTLSize pgrid = MTLSizeMake(n_kv, ntiles, ps);
+        dispatch(("k_attn_pmax_" + sfx).c_str(), &p, sizeof p, pgrid, MTLSizeMake(128, 1, 1));
+        // P.V: one threadgroup per 128-dim half (half the int64 accumulators per thread: more threadgroups per core)
+        dispatch(("k_attn_pacc_" + sfx).c_str(), &p, sizeof p, MTLSizeMake(n_kv * (hd / 128), ntiles, ps), MTLSizeMake(128, 1, 1));
+        if (ps > 1) dispatch(("k_attn_fin_" + hds).c_str(), &p, sizeof p, MTLSizeMake((size_t)M * n_h, 1, 1), MTLSizeMake(hd, 1, 1));
+        return;
+    }
     const MTLSize grid = MTLSizeMake(nsplit, n_kv, M);
     dispatch(("k_attn_max_" + sfx).c_str(), &p, sizeof p, grid, MTLSizeMake(128, 1, 1));
     dispatch(("k_attn_acc_" + sfx).c_str(), &p, sizeof p, grid, MTLSizeMake(128, 1, 1));
