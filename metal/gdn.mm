@@ -41,7 +41,9 @@ void det_gdn(const det_gdn_layer* L, det_gdn_state* ST, const float* qkv, const 
                               gpu(y), gpu(beta), gpu(decay), eps, t0, conv_dim, kd, n_v };
         dispatch("k_gdn_prep", &pp, sizeof pp, MTLSizeMake((conv_dim + 511) / 512, mc, 1), MTLSizeMake(128, 1, 1));
         det_p_gdn_recur pr = { gpu(y), gpu(beta), gpu(decay), gpu(ST->S), gpu(o), mc, conv_dim, kd, n_v, rep };
-        dispatch("k_gdn_recur", &pr, sizeof pr, MTLSizeMake(n_v * (HD / 32), 1, 1), MTLSizeMake(128, 1, 1));
+        // tile: JB columns x PP lanes per column (must match the shader defines GDN_JB / GDN_P, see DET_METAL_DEFINES)
+        static const int JB = getenv("DET_GDN_JB") ? atoi(getenv("DET_GDN_JB")) : 32, PP = getenv("DET_GDN_P") ? atoi(getenv("DET_GDN_P")) : 16;
+        dispatch("k_gdn_recur", &pr, sizeof pr, MTLSizeMake(n_v * (HD / JB), 1, 1), MTLSizeMake(JB * PP, 1, 1));
         const int nrows = mc * n_v;
         const int nblk_out = (nrows + 3) / 4;
         const int nblk_conv = last ? (conv_dim + 127) / 128 : 0;

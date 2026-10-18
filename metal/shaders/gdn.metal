@@ -64,11 +64,17 @@ kernel void k_gdn_prep(constant det_p_gdn_prep& p [[buffer(0)]], uint2 tgid [[th
 }
 
 // JB columns of one v-head per threadgroup, P lanes per column (R = 128/P k dims each), NT = JB*P = 128 threads.
-#define JB 32
-#define PP 4
-#define RR 32
-#define LPP 8
-#define KS 36
+#ifndef GDN_JB
+#define GDN_JB 32
+#endif
+#ifndef GDN_P
+#define GDN_P 16    // lanes per column (8 state registers per lane): 2x faster than 4 on the M5 Max
+#endif
+#define JB GDN_JB
+#define PP GDN_P
+#define RR (128 / PP)
+#define LPP (32 / PP)
+#define KS (RR + 4)
 // Fast path: the token step with raw hardware ops, every result checked with a 2-op test for zero / denormal /
 // minimum-normal-binade values (the only cases where the flushing hardware result can differ from IEEE); if any lane
 // of the simdgroup flags a value (or the token's k/q/v/decay/beta inputs are flagged), the whole simdgroup redoes the
@@ -77,10 +83,10 @@ kernel void k_gdn_prep(constant det_p_gdn_prep& p [[buffer(0)]], uint2 tgid [[th
 inline bool susp(float x) { return (as_type<uint>(x) & 0x7fffffffu) < 0x01000000u; }
 #define CHK(x) (bad = bad | susp(x))
 inline float tree_local_chk32(thread const float* v, thread bool& bad) {
-    float t[32];
-    DET_U_TREE for (int i = 0; i < 32; i++) t[i] = v[i];
-    DET_U_TREE for (int s = 1; s < 32; s <<= 1) {
-        DET_U_TREE for (int i = 0; i < 32; i += 2 * s) { t[i] = t[i] + t[i + s]; CHK(t[i]); }
+    float t[RR];
+    DET_U_TREE for (int i = 0; i < RR; i++) t[i] = v[i];
+    DET_U_TREE for (int s = 1; s < RR; s <<= 1) {
+        DET_U_TREE for (int i = 0; i < RR; i += 2 * s) { t[i] = t[i] + t[i + s]; CHK(t[i]); }
     }
     return t[0];
 }
@@ -109,7 +115,7 @@ kernel void k_gdn_recur(constant det_p_gdn_recur& p [[buffer(0)]], uint bid [[th
     device const float* dh = decay + h;
     if (tid < 3) badkq[tid] = 0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (int i = tid; i < 2 * GDN_HD; i += 128) {
+    for (int i = tid; i < 2 * GDN_HD; i += JB * PP) {
         const int ii = i & (GDN_HD - 1);
         const float val = (i < GDN_HD) ? yk[ii] : yq[ii];
         skq[0][i >= GDN_HD][(ii / RR) * KS + (ii % RR)] = val;
@@ -118,14 +124,14 @@ kernel void k_gdn_recur(constant det_p_gdn_recur& p [[buffer(0)]], uint bid [[th
     float vcur = yv[0], bcur = bh[0], dcur = dh[0];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (int t = 0; t < M; t++) {
-        float nload[2];
+        float nload[(2 * GDN_HD + JB * PP - 1) / (JB * PP)];
         float vn = 0.0f, bn = 0.0f, dn = 0.0f;
         if (t + 1 < M) {
             const ulong off = (ulong)(t + 1) * conv_dim;
-            for (int l = 0; l < 2; l++) {
-                const int i = tid + l * 128;
+            for (int l = 0; l < (2 * GDN_HD + JB * PP - 1) / (JB * PP); l++) {
+                const int i = tid + l * (JB * PP);
                 const int ii = i & (GDN_HD - 1);
-                nload[l] = (i < GDN_HD) ? yk[off + ii] : yq[off + ii];
+                nload[l] = (i < GDN_HD) ? yk[off + ii] : (i < 2 * GDN_HD ? yq[off + ii] : 0.0f);
             }
             vn = yv[off]; bn = bh[(ulong)(t + 1) * n_v]; dn = dh[(ulong)(t + 1) * n_v];
         }
@@ -185,11 +191,10 @@ kernel void k_gdn_recur(constant det_p_gdn_recur& p [[buffer(0)]], uint bid [[th
         if (pp == 0) o[((ulong)t * n_v + h) * GDN_HD + jg] = ov;
         if (t + 1 < M) {
             if (tid == 0) badkq[(t + 2) % 3] = 0;
-            for (int l = 0; l < 2; l++) {
-                const int i = tid + l * 128;
+            for (int l = 0; l < (2 * GDN_HD + JB * PP - 1) / (JB * PP); l++) {
+                const int i = tid + l * (JB * PP);
                 const int ii = i & (GDN_HD - 1);
-                skq[(t + 1) & 1][i >= GDN_HD][(ii / RR) * KS + (ii % RR)] = nload[l];
-                if (susp(nload[l])) badkq[(t + 1) % 3] = 1;
+                if (i < 2 * GDN_HD) { skq[(t + 1) & 1][i >= GDN_HD][(ii / RR) * KS + (ii % RR)] = nload[l]; if (susp(nload[l])) badkq[(t + 1) % 3] = 1; }
             }
             vcur = vn; bcur = bn; dcur = dn;
         }

@@ -62,7 +62,9 @@ void det_gemm_ex(const det_qlinear* Lp, const int8_t* xq, const float* sx, const
         std::string name = "k_gemm_dectc_" + std::to_string(L.bits) + "_" + std::to_string(BN);
         dispatch(name.c_str(), &p, sizeof p, MTLSizeMake(ntg, splits, 1), MTLSizeMake(128, 1, 1));
     } else {
-        const int BM = M <= 32 ? 32 : 64, BN = 64;
+        static const int bm_env = getenv("DET_GEMM_PRE_BM") ? atoi(getenv("DET_GEMM_PRE_BM")) : 0;
+        // measured: 32-row tiles run the int8 op at ~55 TOPS vs ~34 for 64-row tiles (register pressure of the 64x64 result)
+        const int BM = bm_env ? bm_env : (M <= 16 ? 16 : 32), BN = 64;
         std::string name = "k_gemm_pre_" + std::to_string(L.bits) + "_" + std::to_string(BM) + "_" + std::to_string(BN);
         dispatch(name.c_str(), &p, sizeof p, MTLSizeMake((L.N + BN - 1) / BN, (M + BM - 1) / BM, 1), MTLSizeMake(128, 1, 1));
     }

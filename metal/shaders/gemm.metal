@@ -292,3 +292,4 @@ kernel void k_gemm_pre_##BITS##_##BM##_##BN(constant det_p_gemm& p [[buffer(0)]]
 }
 DET_GEMM_PRE(8, 64, 64) DET_GEMM_PRE(6, 64, 64) DET_GEMM_PRE(4, 64, 64)
 DET_GEMM_PRE(8, 32, 64) DET_GEMM_PRE(6, 32, 64) DET_GEMM_PRE(4, 32, 64)
+DET_GEMM_PRE(8, 16, 64) DET_GEMM_PRE(6, 16, 64) DET_GEMM_PRE(4, 16, 64)
