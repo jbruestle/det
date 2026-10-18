@@ -6,16 +6,26 @@ match a pure-numpy CPU reference.  Weights are 6-bit (group 128), activations in
 multipliers, every GEMM and attention sum is exact integer arithmetic, and everything else is a fixed
 sequence of IEEE fp32 operations.  `docs/SPEC.md` is the normative definition; `detref/` executes it.
 
-## Results (RTX 5090, 27B, wikitext-2, llama-perplexity protocol)
+## Results (RTX 5090, Qwen3.8-27B, wikitext-2, llama-perplexity protocol, identical token ids)
 
-| | perplexity | decode tok/s | prefill 4k tok/s | prefill 128k tok/s | VRAM |
-|---|---|---|---|---|---|
-| llama.cpp, unsloth UD-Q6_K GGUF | 5.982 | 64 | 3456 | 2017 | 21 GB + KV |
-| det W6 (option A) | 6.004 | ~67 | ~4300 | see below | 20 GB + KV |
-| det W6 + out/down at W8 | 6.000 | 63 | 4951 | 2420 | 21.8 GB + KV |
+| | perplexity | VRAM (weights + buffers) | max context in 32 GB |
+|---|---|---|---|
+| llama.cpp, unsloth UD-Q6_K GGUF | 5.982 | 21 GB + KV | — |
+| det W6 (shipped: W6 everywhere, lm_head and GDN a/b at W8) | 6.004 (+0.38%) | 20 GB + 1.2 GB | ~230k (model max 262k) |
+| det W6 with out_proj and down_proj at W8 | 6.000 (+0.30%) | 21.8 GB + 1.2 GB | ~190k |
 
-KV cache: 49.4 KB per token; 128k context fits in ~30 GB.  Decode uses CUDA graphs; prefill attention uses
-int8 tensor cores (exact byte-sliced P.V).  See the git history / `out/` logs for the full benchmark tables.
+Speed, tokens/s (llama-bench tests; prefill of N tokens, then 128-token decode), det = shipped W6 model:
+
+| test | llama.cpp UD-Q6_K | det |
+|---|---|---|
+| prefill 2048 / 4096 | 3511 / 3456 | 4351 / 4487 |
+| prefill 16k / 32k / 64k / 128k | 3464 / 3218 / 2742 / 2017 | 4333 / 3867 / 3185 / 2364 |
+| decode @ 0 / 4k | 64.3 / 63.5 | 67.9 / 67.0 |
+| decode @ 32k / 64k / 128k / 192k | — / 55.3 / 48.3 / — | 63.1 / 58.1 / 50.0 / 44.4 |
+
+KV cache is 49.4 KB per token (int8 K, int16 V); 128k context runs in 28.3 GB, 192k in 30.8 GB.  Decode is one
+CUDA graph per token; prefill attention runs on int8 tensor cores with exact byte-sliced P.V.  Logits are
+identical for one-shot, chunked and token-by-token prefill and match the numpy CPU reference bit for bit.
 
 ## Layout
 - `docs/SPEC.md`        numerics specification (normative)

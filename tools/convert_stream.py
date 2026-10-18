@@ -25,7 +25,10 @@ class ShardSource:
         """keep=True: `local` already holds the full checkpoint (e.g. a HF cache snapshot); never delete shards."""
         self.repo, self.local, self.keep = repo, local, keep
         os.makedirs(local, exist_ok=True)
-        idx = json.load(open(hf_hub_download(repo, "model.safetensors.index.json", local_dir=local)))
+        idx_path = os.path.join(local, "model.safetensors.index.json")
+        if not (keep and os.path.exists(idx_path)):
+            idx_path = hf_hub_download(repo, "model.safetensors.index.json", local_dir=local)
+        idx = json.load(open(idx_path))
         self.map = idx["weight_map"]
         self.shards = sorted(set(self.map.values()))
         self.handles = {}
@@ -72,7 +75,9 @@ def main():
     args = ap.parse_args()
     local = args.local or os.path.join(os.path.dirname(__file__), "..", "dl", args.repo.split("/")[-1].lower())
     src = ShardSource(args.repo, local, keep=args.local is not None)
-    cfg = json.load(open(hf_hub_download(args.repo, "config.json", local_dir=local)))
+    cfg_path = os.path.join(local, "config.json")
+    if not (args.local and os.path.exists(cfg_path)): cfg_path = hf_hub_download(args.repo, "config.json", local_dir=local)
+    cfg = json.load(open(cfg_path))
     tc = cfg.get("text_config", cfg)
     H, L, V = tc["hidden_size"], tc["num_hidden_layers"], tc["vocab_size"]
     layer_types = tc["layer_types"][:L]
