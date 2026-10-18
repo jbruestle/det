@@ -7,3 +7,5 @@ cuda/*.so
 __pycache__/
 *.pyc
 *.npz
+metal/*.o
+metal/*.dylib

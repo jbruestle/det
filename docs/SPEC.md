@@ -132,13 +132,21 @@ absmax of fp32 V, and sets `v_scale = absmax * 8 / 32767` (8x headroom; values b
 * CUDA: `-fmad=false`, no `--use_fast_math`, default `-prec-div=true -prec-sqrt=true -ftz=false`;
   never call `__expf`, `expf`, `rsqrtf`, `__fdividef`, etc.  Use `__float2int_rn`, `__ll2float_rn`.
   The kernels use `__fmul_rn/__fadd_rn/__fdiv_rn/__fsqrt_rn` explicitly (never contracted).
-* Metal (planned): `-fno-fast-math`; verify `exp_f/log_f/treesum/div/sqrt` bit-exactness and denormal
-  behaviour against numpy before any kernel work.
+* Metal (`metal/`): shaders are compiled at runtime with `MTLMathModeSafe` (no fast math, no FMA contraction; div
+  and sqrt are correctly rounded; int<->float conversions are RNE).  Apple GPUs flush fp32 denormals (inputs and
+  outputs, in every arithmetic op and in comparisons), which the spec forbids: `metal/shaders/common.metal` wraps
+  every fp32 add/sub/mul/div/sqrt in a check that takes the hardware result only when it is provably the IEEE one
+  (no denormal operand, result outside the zero / denormal / minimum-normal range) and otherwise recomputes it
+  exactly in integer arithmetic; comparisons and max use an order-preserving integer key.  `tests/metal/test_denorm.py`
+  and `test_prim.py` verify the primitives (including denormal operands and results) against numpy bit for bit.
+  The integer GEMM / attention contractions run on the tensor unit (`mpp::tensor_ops::matmul2d`, int8 x int8 ->
+  int32, exact) or as fp32 FMAs on integers < 2^24 (exact).
 * CPU reference: numpy float32 (each ufunc is one correctly rounded op); integer GEMMs via fp32 BLAS on
   128-wide groups (all partial sums are integers < 2^24, hence exact).
 
 ## 9. Open risks
-* Denormal handling on Apple GPUs (GDN state can decay into the denormal range).
+* ~~Denormal handling on Apple GPUs~~: resolved by the software denormal layer of the Metal backend (verified on
+  the GDN decay runs of `tests/metal/test_gdn.py`, which drive the state through the denormal range).
 * Static V scale clipping on pathological inputs (8x headroom over calibration).
 * Softmax probability fixed point 2^-24 absolute resolution (worse than fp32 for p < 2^-14; negligible).
 * Determinism has been demonstrated on one GPU (RTX 5090) against the CPU reference; cross-generation runs
