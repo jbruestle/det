@@ -537,11 +537,13 @@ fn main() {
         "conformance" => match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
             #[cfg(target_arch = "x86_64")]
             "cpu" if det::x86::X86::available() => conformance(det::x86::X86::new(), None),
+            #[cfg(target_arch = "aarch64")]
+            "cpu" if det::arm::Arm::available() => conformance(det::arm::Arm::new(), None),
             #[cfg(target_os = "macos")]
             "metal" => conformance(det::metal::Metal::new(), Some(&det::metal::test_prim)),
             #[cfg(target_os = "linux")]
             "cuda" => conformance(det::cuda::Cuda::new(), Some(&det::cuda::test_prim)),
-            other => panic!("conformance checks a GPU or x86 backend against the reference ({other} is not one, or is not built in)"),
+            other => panic!("conformance checks a GPU or CPU backend against the reference ({other} is not one, or is not built in)"),
         },
         "info" => return info(Path::new(pos(1))),
         "tensor" => return tensor(Path::new(pos(1)), pos(2), a.pos.get(3).map_or(8, |v| v.parse().unwrap())),
@@ -563,6 +565,8 @@ fn main() {
     match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
         #[cfg(target_arch = "x86_64")]
         "cpu" if det::x86::X86::available() => run!(det::x86::X86::new()),
+        #[cfg(target_arch = "aarch64")]
+        "cpu" if det::arm::Arm::available() => run!(det::arm::Arm::new()),
         "cpu" | "ref" => run!(det::cpu::Cpu),
         #[cfg(target_os = "macos")]
         "metal" => run!(det::metal::Metal::new()),

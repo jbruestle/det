@@ -10,7 +10,7 @@ sum is exact integer arithmetic, and everything else is a fixed sequence of IEEE
 ```
 cargo build --release                        # the det binary with the GPU backend of the platform (Metal on macOS, CUDA on Linux)
 det convert Qwen3.5-4B-BF16.gguf             # bf16/f16 GGUF (as llama.cpp's converter writes) -> Qwen3.5-4B-det-w6.gguf, calibrated
-det generate model.gguf --prompt "The capital of France is" --n 32          # the GPU backend (default), --backend cpu (AVX2 / AVX-VNNI) or --backend ref
+det generate model.gguf --prompt "The capital of France is" --n 32          # the GPU backend (default), --backend cpu (AVX2 / AVX-VNNI on x86-64, NEON sdot / smmla on AArch64) or --backend ref
 det generate model.gguf --chat --prompt "Write a haiku." --temp 0.7 --top-p 0.95   # the file's chat template; top-k/top-p
 det bench model.gguf --pp 512 --tg 128      det bench model.gguf --gemm     # throughput; per-linear GEMM rates
 det ppl model.gguf wikitext-test.txt --ctx 2048 --chunks 8                  # llama-perplexity protocol
@@ -51,13 +51,16 @@ Width presets measured on the 4B (wikitext-2, ctx 2048, 8 chunks; bf16 through l
     and runs the integer GEMM on `vpdpbusd` (AVX-VNNI) or `vpmaddubsw` (AVX2 only); `attn.rs`, `gdn.rs`,
     `glue.rs` (norms and activation quantization) and `simd.rs` (the fp32 primitives on 8 lanes) cover the
     rest. Threads come from rayon (`RAYON_NUM_THREADS`; the thread count cannot change a result).
+  - `arm/`: the AArch64 backend (`--backend cpu`), the same files over NEON: `gemm.rs` repacks the weights
+    into 4-row strips and runs the integer GEMM on `sdot` (FEAT_DotProd, required) or `smmla` (FEAT_I8MM,
+    Apple M2+, Neoverse V1/N2+); `simd.rs` has the fp32 primitives on 4 lanes.
   - `metal.rs`: the Metal backend over `det-sys`; builds the tiled weight layout the kernels read.
   - `cuda.rs`: the CUDA backend over `det-sys`; row-major weights, the KV cache without Metal's V planes.
   - `qwen35.rs`: the network's forward pass against the op set; `model.rs`: loading, buffers, generation.
   - `hooks.rs`: observation taps (residual stream, attention inputs/outputs, GDN inputs/outputs/state,
     logits, sampled tokens) for calibration, debugging and external observers; `calibrate.rs` uses them.
   - `gguf.rs`, `config.rs`, `tokenizer.rs`: the file, its hyperparameters, its tokenizer.
-  - `conformance.rs`: every op of the GPU and x86 backends against the reference backend on random inputs
+  - `conformance.rs`: every op of the GPU, x86 and arm backends against the reference backend on random inputs
     and on the edge cases of the numerics (denormal and zero rows, a GDN state decaying through the
     denormal range, ties, degenerate sampling parameters), bit for bit; `det conformance` runs it on an
     installed build, `tests/backends.rs` under cargo. `tests/tokenizer.rs`.
@@ -102,4 +105,12 @@ prefills the 4B W6 at 495 tok/s (512 tokens, batch 256) and decodes at 17.1 tok/
 91 tok/s and decodes at 3.0 tok/s, the DRAM rate of its 22.6 GB. Its logits match the reference and CUDA
 backends bit for bit on the same prompts, with and without VNNI.
 
-Next: CUDA graphs for decode, AVX-512 / AMX paths, more architectures.
+On the M5 Max (12 P + 6 E cores, NEON with i8mm), the arm backend prefills the 4B W6 at 373 tok/s (512
+tokens, batch 256) and decodes at 19.6 tok/s; the 27B W6 prefills at 63 tok/s and decodes at 5.3 tok/s.
+Decode is bound by the per-op wake-up of the 18-thread pool rather than by DRAM: with
+`RAYON_NUM_THREADS=12` the 4B decodes at 26.5 tok/s (and prefills at 264). Its logits match the reference
+and Metal backends bit for bit on a 5-token prompt with 16 decoded tokens and on a 418-token prefill (4B
+and 27B); perplexity on the 4B is 7.57, as on Metal.
+
+Next: CUDA graphs for decode, AVX-512 / AMX and SME paths, a CPU decode path that keeps its threads hot,
+more architectures.

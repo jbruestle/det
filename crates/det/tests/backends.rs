@@ -1,4 +1,4 @@
-//! The conformance suites (`det::conformance`): every op of the GPU and x86 backends against the
+//! The conformance suites (`det::conformance`): every op of the GPU, x86 and arm backends against the
 //! reference backend, bit for bit.
 
 use det::conformance::{self, Report};
@@ -74,6 +74,35 @@ mod x86 {
             #[test]
             fn $name() {
                 each(conformance::$name::<X86>);
+            }
+        )*};
+    }
+    suites!(gemm, norms, attention, gdn, sampling);
+}
+
+#[cfg(target_arch = "aarch64")]
+mod arm {
+    use super::*;
+    use det::arm::Arm;
+
+    /// Both GEMM paths where the CPU has i8mm, the sdot one otherwise.
+    fn each(f: fn(&Arm, &mut Report)) {
+        if !Arm::available() {
+            return;
+        }
+        let mut r = Report::default();
+        f(&Arm::with_i8mm(false), &mut r);
+        if std::arch::is_aarch64_feature_detected!("i8mm") {
+            f(&Arm::with_i8mm(true), &mut r);
+        }
+        check(r);
+    }
+
+    macro_rules! suites {
+        ($($name:ident),*) => {$(
+            #[test]
+            fn $name() {
+                each(conformance::$name::<Arm>);
             }
         )*};
     }

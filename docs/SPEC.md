@@ -163,6 +163,12 @@ key runs with `v_scale = 2^-10`.
   `vpdpbusd` (u8 × s8 → s32, exact) or, without VNNI, `vpmaddubsw` + `vpmaddwd`, whose saturating 16-bit
   pair sums stay exact for codes ≤ 127 (W8 codes go through their two nibbles). `treesum` is built from
   in-register pair sums (`vhaddps`), which is the same tree.
+* AArch64 (`crates/det/src/arm`): NEON intrinsics, one per spec op (`vmulq_f32`, `vaddq_f32`,
+  `vdivq_f32`, `vsqrtq_f32`, `vrndmq_f32`, `vrndnq_f32` to nearest even, `vcvtq_s32_f32`), which the
+  compiler never contracts; no `vfmaq`, no reciprocal or rsqrt estimates; the default FPCR (round to
+  nearest, FZ and AH clear, so denormals are preserved). The integer dots are `sdot` (s8 × s8 → s32,
+  exact) or `smmla` (2×8 by 8×2 s8 → s32, exact) and `smlal` (s32 × s32 → s64). `treesum` is built from
+  in-register pair sums (`faddp`), which is the same tree.
 
 ## 9. Open risks
 * Static V scale clipping on pathological inputs (8× headroom over calibration).

@@ -1,5 +1,7 @@
 //! det: deterministic, bit-exact LLM inference over stock GGUF files.
 
+#[cfg(target_arch = "aarch64")]
+pub mod arm;
 pub mod backend;
 pub mod calibrate;
 pub mod config;
