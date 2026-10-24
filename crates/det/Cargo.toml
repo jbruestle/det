@@ -1,0 +1,19 @@
+[package]
+name = "det"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Deterministic, bit-exact LLM inference over stock GGUF files"
+
+[dependencies]
+memmap2 = "0.9"
+rayon = "1"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+minijinja = { version = "2", features = ["json", "loop_controls"] }
+minijinja-contrib = { version = "2", features = ["pycompat"] }
+det-sys = { path = "../det-sys", optional = true }
+
+[features]
+default = ["metal"]
+metal = ["dep:det-sys", "det-sys/metal"]
+cuda = ["dep:det-sys", "det-sys/cuda"]

@@ -1,115 +1,94 @@
-# det — bit-exact deterministic inference for Qwen3.8-27B
+# det — bit-exact deterministic LLM inference
 
-`det` runs Qwen3.8-27B (the Qwen3.5 hybrid architecture: 48 Gated DeltaNet layers + 16 gated-attention
-layers) with logits that are identical bit for bit across GPUs, batch sizes and prefill chunkings, and that
-match a pure-numpy CPU reference.  Weights are 6-bit (group 128), activations int8 with per-group
-multipliers, every GEMM and attention sum is exact integer arithmetic, and everything else is a fixed
-sequence of IEEE fp32 operations.  `docs/SPEC.md` is the normative definition; `detref/` executes it.
+`det` runs Qwen3.5-architecture models (Gated DeltaNet + gated attention; the 27B is the target, the 4B
+the dev model) with logits that are identical bit for bit across GPUs, batch sizes and prefill
+chunkings, and that match a CPU reference. Weights are 6-bit (group 128) in det's own integer-scale
+format inside a GGUF container, activations int8 with per-group multipliers; every GEMM and attention
+sum is exact integer arithmetic, and everything else is a fixed sequence of IEEE fp32 operations.
+`docs/SPEC.md` is the normative definition; `crates/det/src/spec` executes it.
 
-## Results (RTX 5090, Qwen3.8-27B, wikitext-2, llama-perplexity protocol, identical token ids)
+```
+cargo build --release                        # the det binary with the GPU backend of the platform (Metal on macOS, CUDA on Linux)
+det convert Qwen3.5-4B-BF16.gguf             # bf16/f16 GGUF (as llama.cpp's converter writes) -> Qwen3.5-4B-det-w6.gguf, calibrated
+det generate model.gguf --prompt "The capital of France is" --n 32          # the GPU backend (default) or --backend cpu
+det generate model.gguf --chat --prompt "Write a haiku." --temp 0.7 --top-p 0.95   # the file's chat template; top-k/top-p
+det bench model.gguf --pp 512 --tg 128      det bench model.gguf --gemm     # throughput; per-linear GEMM rates
+det ppl model.gguf wikitext-test.txt --ctx 2048 --chunks 8                  # llama-perplexity protocol
+det info model.gguf  |  det tensor model.gguf blk.0.attn_norm.weight  |  det tokens model.gguf 248040 248060
+```
 
-| | perplexity | VRAM (weights + buffers) | max context in 32 GB |
-|---|---|---|---|
-| llama.cpp, unsloth UD-Q6_K GGUF | 5.982 | 21 GB + KV | — |
-| det W6 (shipped: W6 everywhere, lm_head and GDN a/b at W8) | 6.004 (+0.38%) | 20 GB + 1.2 GB | ~230k (model max 262k) |
-| det W6 with out_proj and down_proj at W8 | 6.000 (+0.30%) | 21.8 GB + 1.2 GB | ~190k |
+`det convert` quantizes every linear (`--bits` sets the width per linear; the default is W6 with W8 for
+the output head and the GDN a/b projections),
+writes the rotary tables and the output head, and calibrates the int16 value cache (one static scale
+per attention layer and kv head, `det.v_scale` in the metadata; `--no-calibrate` leaves the default
+scale, `det calibrate` writes it later in place). The tokenizer, the chat template and the
+hyperparameters come from the GGUF metadata, so nothing else is needed. Split source files are read as
+one.
 
-Speed, tokens/s (llama-bench tests; prefill of N tokens, then 128-token decode), det = shipped W6 model:
+Width presets measured on the 4B (wikitext-2, ctx 2048, 8 chunks; bf16 through llama.cpp is 7.46):
 
-| test | llama.cpp UD-Q6_K | det |
+| `--bits` | size | perplexity |
 |---|---|---|
-| prefill 2048 / 4096 | 3511 / 3456 | 4351 / 4487 |
-| prefill 16k / 32k / 64k / 128k | 3464 / 3218 / 2742 / 2017 | 4333 / 3867 / 3185 / 2364 |
-| decode @ 0 / 4k | 64.3 / 63.5 | 67.9 / 67.0 |
-| decode @ 32k / 64k / 128k / 192k | — / 55.3 / 48.3 / — | 63.1 / 58.1 / 50.0 / 44.4 |
-
-KV cache is 49.4 KB per token (int8 K, int16 V); 128k context runs in 28.3 GB, 192k in 30.8 GB.  Decode is one
-CUDA graph per token; prefill attention runs on int8 tensor cores with exact byte-sliced P.V.  Logits are
-identical for one-shot, chunked and token-by-token prefill and match the numpy CPU reference bit for bit.
+| `8` | 5.6 GB | 7.44 |
+| `6,ffn_down=8,ssm_out=8,attn_output=8` | 4.8 GB | 7.46 (27B: 6.27, +8% size, −4% decode) |
+| `6` (the default) | 4.7 GB | 7.57 (27B: 6.28) |
+| `6,ffn_gate=4,ffn_up=4,ffn_down=4` | 4.0 GB | 7.77 |
+| `4,ffn_down=6,ssm_out=6,attn_output=6` | 3.8 GB | 7.87 |
+| `4` | 3.5 GB | 8.04 |
 
 ## Layout
-- `docs/SPEC.md`        numerics specification (normative)
-- `metal/`              Metal implementation (Apple silicon), same C API as `cuda/det.h` in `det_metal.h`:
-                        `det_metal.mm` (runtime: unified-memory buffers, residency set, runtime shader compilation,
-                        dispatch), `shaders/*.metal` (`common.metal` primitives + software denormals, `glue`, `gemm`,
-                        `attn`, `gdn`, `sample`), `make -C metal` builds `libdet_metal.dylib` (no Metal toolchain needed)
-- `python/detmetal.py`  ctypes bindings (shared buffers with numpy views), `detmodel_metal.py` (model runner)
-- `tests/metal/`        Metal bit-exactness suites (`run_tests_metal.sh` runs everything)
-- `tools/*_metal.py`    `metal_compare.py` (vs the numpy reference), `generate_metal.py`, `bench_metal.py`,
-                        `calib_v_metal.py`, `ppl_metal.py`
-- `detref/`             numpy golden reference: `detmath.py` (primitives), `quant.py` (weight format),
-                        `model.py` (forward pass), `convert.py` (HF -> det, small models), `sample.py` (sampling)
-- `cuda/`               CUDA implementation: `common.cuh` (device primitives), `norm.cu` (glue), `gemm.cu`,
-                        `attn.cu`, `gdn.cu`, `sample.cu`, `det.h` (C API).  `make -C cuda` builds `libdet.so`.
-- `python/`             `detcuda.py` (ctypes bindings), `detmodel_cuda.py` (model runner: prefill, graphed decode)
-- `tests/`              per-kernel bit-exact tests vs the reference; `run_tests.sh` runs everything
-- `tools/`              `convert_stream.py` (HF -> det for the 27B, resumable), `requant_tensors.py` (change the bit
-                        width of selected tensors), `calib_v_cuda.py` (V scales), `extend_rope.py`, `generate.py`
-                        (chat generation), `bench.py`, `ppl_protocol.py` / `ppl_cuda.py` / `ppl_hf.py` (perplexity),
-                        `cuda_compare.py` / `invariance.py` / `long_invariance.py` (bit-exactness), `ablate.py`
-                        (quantization ablations), `hf_baseline.py`, `calib_v.py` (HF-side calibration)
 
-## Reproduce
-```
-python3 -m venv .venv && .venv/bin/pip install numpy safetensors huggingface_hub transformers torch
-make -C cuda
-# 4B dev model (same architecture), reference baseline and full bit-exact check:
-.venv/bin/python tools/hf_baseline.py Qwen/Qwen3.5-4B out/hf_4b_baseline.npz
-.venv/bin/python tools/calib_v.py Qwen/Qwen3.5-4B out/calib_v_4b.json
-.venv/bin/python detref/convert.py <hf_snapshot_dir> models/qwen35-4b-w6 --bits 6 --calib out/calib_v_4b.json
-./run_tests.sh
-# 27B: convert from the Hub (or a local snapshot with --local <dir>), calibrate V scales, generate:
-.venv/bin/python tools/convert_stream.py Qwen/Qwen3.8-27B models/qwen38-27b-w6 --bits 6
-.venv/bin/python tools/calib_v_cuda.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B
-.venv/bin/python tools/extend_rope.py models/qwen38-27b-w6 262144
-.venv/bin/python tools/generate.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B "prompt" 200 --chat [--temp 0.8 --seed 1]
-```
+- `docs/SPEC.md`: the numerics (normative).
+- `crates/det`: the library.
+  - `spec/`: the numerics as plain scalar Rust (primitives, the weight row and GEMM element, activation
+    quantization, the attention and GDN steps, sampling). Normative.
+  - `quantize.rs`, `convert.rs`: the weight quantizer and `det convert`.
+  - `backend.rs`: the op set a backend implements (`Backend`) and its buffer type `Buf`.
+  - `cpu.rs`: the CPU backend, the spec applied row by row (parallel only across independent rows and heads).
+  - `metal.rs`: the Metal backend over `det-sys`; builds the tiled weight layout the kernels read.
+  - `cuda.rs`: the CUDA backend over `det-sys`; row-major weights, the KV cache without Metal's V planes.
+  - `qwen35.rs`: the network's forward pass against the op set; `model.rs`: loading, buffers, generation.
+  - `hooks.rs`: observation taps (residual stream, attention inputs/outputs, GDN inputs/outputs/state,
+    logits, sampled tokens) for calibration, debugging and external observers; `calibrate.rs` uses them.
+  - `gguf.rs`, `config.rs`, `tokenizer.rs`: the file, its hyperparameters, its tokenizer.
+  - `tests/backends.rs`: every GPU op against the CPU backend, bit for bit; `tests/tokenizer.rs`.
+- `crates/det-sys`: FFI to the GPU runtime, one C API for both; the `metal` feature compiles
+  `kernels/metal` with the shaders embedded (cargo tracks shader edits; `DET_METAL_SHADERS=<dir>` reads
+  them from disk instead), the `cuda` feature runs nvcc from `CUDA_HOME` (default `/usr/local/cuda`) on
+  `kernels/cuda` for the SM versions in `DET_CUDA_ARCHS` (default `120,89,80`), linking `cudart_static`.
+- `crates/det-cli`: the `det` command.
+- `kernels/metal`: the Metal runtime (`det_metal.mm`: unified-memory buffers, one in-order queue,
+  runtime shader compilation) and the kernels (`shaders/common.metal`: the fp32 primitives with software
+  denormals; `gemm`, `attn`, `gdn`, `glue`, `sample`). `det_metal.h` is the C API.
+- `kernels/cuda`: the CUDA runtime (`runtime.cu`: device buffers, the default stream) and the kernels
+  (`common.cuh`: the fp32 primitives; `gemm`, `attn`, `gdn`, `norm`, `sample`). `det_cuda.h` is the C API,
+  the same functions as `det_metal.h`. Knobs: `DET_ATTN_TC` (tensor-core attention from this many tokens
+  on, default 16; 0 disables), `DET_GEMM_DP4A` (1 forces the dp4a GEMM for M > 8, 2 the 32x32-warp-tile
+  MMA kernel for M > 64).
 
-## Metal (Apple silicon)
-`metal/` implements the same `det.h` API (`metal/det_metal.h`: host pointers into unified-memory buffers from
-`det_malloc`, one in-order queue, `det_sync`).  Every kernel suite and the end-to-end 4B check are bit-exact against the
-numpy reference (`./run_tests_metal.sh`), so the logits are identical to the CUDA path's.  Notes:
-* Apple GPUs flush fp32 denormals in every arithmetic op; the Metal primitives emulate IEEE denormals exactly
-  (fast-path check + integer slow path, see `docs/SPEC.md` 8).  All fp32 math goes through them.
-* GEMMs and attention/GDN contractions use the M5 tensor unit (`mpp::tensor_ops::matmul2d`, int8 -> int32, exact);
-  decode GEMMs stream the weights in a tiled layout (`[N/64][K/128][64 rows][group bytes]`, built at load time).
-* Shaders are compiled from source at first use (a few seconds; no Metal toolchain required).
+## Status
 
-```
-make -C metal && ./run_tests_metal.sh                       # kernel suites + 4B end-to-end bit-exactness
-.venv/bin/python tools/generate_metal.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B "prompt" 200 --chat
-.venv/bin/python tools/bench_metal.py models/qwen38-27b-w6 --pp 512,2048 --tg 128 --depth 0
-.venv/bin/python tools/ppl_metal.py models/qwen38-27b-w6 Qwen/Qwen3.8-27B --ctx 2048 --chunks 8
-```
+Measured on an M5 Max (tok/s): Qwen3.5-4B W6 prefill 512 at 3091, decode 69.5 (W8: 3083 / 70.0);
+Qwen3.8-27B W6 prefill 2048 at 671, prefill 65536 at 278, decode 17.3 (14.8 at 64k depth).
+Wikitext-2 perplexity (ctx 2048, llama-perplexity protocol, calibrated): 4B W6 7.57, W8 7.44, llama.cpp
+on the bf16 file 7.46 (8 chunks); 27B W6 6.28, llama.cpp bf16 6.22 (4 chunks). CPU and Metal agree bit
+for bit on every path (`cargo test --release -p det`, and `det generate --logits` on each backend).
 
-### Results (M5 Max, 128 GB, macOS 26)
+On an RTX 5090 (CUDA), tok/s; det prefills N tokens from an empty context in batches of 1024 (the average
+rate over the whole fill; between 64k and 128k it runs at 1915) and then decodes at that depth, llama.cpp
+prefills 2048 tokens at that depth:
 
-| model | pp512 | pp2048 | tg128 | pp512 @ d4096 | pp2048 @ d4096 | tg128 @ d4096 |
-|---|---|---|---|---|---|---|
-| det Qwen3.8-27B W6 (22.5 GB) | 689 | 738 | 17.9 | 536 | 540 | 17.4 |
-| llama.cpp Qwen3.8-27B Q8_0 (27.1 GB, fa=1) | 778 | 718 | 18.4 | 637 | 587 | 17.7 |
-| det Qwen3.5-4B W6 (dev model) | ~1150 | ~1170 | ~58 | | | |
+| | 4B W6 | 27B W6 | llama.cpp Q6_K 27B (pp2048 at that depth / decode) |
+|---|---|---|---|
+| prefill 512 (batch 256) / decode | 12931 / 243.6 | 2333 / 60.1 | 2938 / 65.7 |
+| 8k | | 4592 / 58.8 | 3299 / 62.8 |
+| 32k | | 3866 / 56.3 | 2611 / 59.3 |
+| 64k | | 3197 / 51.7 | 1756 / 55.1 |
+| 128k | | 2395 / 45.7 | 1111 / 48.2 |
 
-Long context (27B, batch 2048, det / llama.cpp Q8_0): prefill 131072 tokens from empty 177 / 223 tok/s; prefill 2048
-tokens at depth 32768 294 / - tok/s; prefill 512 tokens at depth 131072 98 / 132 tok/s; decode at depth 131072 13.2 /
-13.2 tok/s.  Decode is at parity at every depth; long-context prefill is within 1.3x (the prefill attention path runs
-scores and P.V on the tensor unit with 7-bit probability slices; see metal/shaders/attn.metal).
+CPU and CUDA logits are identical for both models on a 5-token prompt with 16 decoded tokens and on a
+prefill (300 tokens for the 4B, 512 for the 27B); the 27B logits after 8k, 64k and 128k tokens are
+identical for prefill batches of 256 and 1024. Perplexity on CUDA: 4B W6 7.57, 27B W6 5.08 over 8
+chunks (llama.cpp Q6_K 5.07).
 
-(tok/s, llama-bench protocol; `tools/bench_metal.py` / `llama-bench -fa 1`.)  Decode is within ~3% of llama.cpp with
-a smaller model file and short-context prefill is at parity (pp4096: 675 tok/s at depth 0).  The int8 tensor-unit GEMM
-reaches ~55 TOPS with 32-row tiles.
-The 4B decode is dispatch-latency bound (~390 dependent dispatches per token at ~15 us each).  Perplexity (wikitext-2 test, llama-perplexity
-protocol, ctx 2048, HF tokenization of the raw text, V scales from `tools/calib_v_metal.py`): 6.193 over the full set
-(`tools/ppl_metal.py`).  The numerics are bit-identical to the CUDA path for identical inputs and V scales; the gap to the
-6.004 above comes from the tokenization / chunking (llama-tokenize ids there) and the calibration run, not the kernels.
-
-Kernel level (tests/metal/test_gemm.py bench, bench_kernels): decode GEMM streams W6 weights at 450-490 GB/s and W8 at
-~585 GB/s (614 GB/s peak); prefill GEMM ~55 TOPS (int8 tensor unit, 32x64 tiles); GDN recurrence 7 us/token/layer (27B shape, M >= 64);
-attention 77 us (1k context) / 200 us (8k) / 450 us (32k) per layer at M=1 (scores on the tensor unit, P.V on the ALUs),
-and 7 / 34 / 137 us per token at M=64 (prefill path: scores and P.V on the tensor unit).  Logits are bit-identical to the numpy
-reference for every configuration tested (one-shot vs chunked prefill, decode), hence to the CUDA path.
-
-## Status / next
-NVIDIA path complete (sm_80/89/120 builds); Metal path complete and bit-identical to it (same numpy reference).
-Determinism has been demonstrated on one GPU per vendor against the CPU reference; cross-generation runs on other
-NVIDIA cards and other Apple chips are the next validation.
+Next: CUDA graphs for decode, more architectures.
