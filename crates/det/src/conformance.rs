@@ -56,8 +56,10 @@ impl Rng {
     }
 }
 
+/// Bit-exact, except that any two NaNs match: NaN is outside the model's domain and its payload is the
+/// platform's default.
 fn same(a: &[f32], b: &[f32]) -> Option<String> {
-    let bad: Vec<usize> = (0..a.len()).filter(|&i| a[i].to_bits() != b[i].to_bits()).collect();
+    let bad: Vec<usize> = (0..a.len()).filter(|&i| a[i].to_bits() != b[i].to_bits() && !(a[i].is_nan() && b[i].is_nan())).collect();
     bad.first().map(|&i| format!("{} of {} differ, first at {i}: cpu {:e} ({:#010x}) gpu {:e} ({:#010x})", bad.len(), a.len(), a[i], a[i].to_bits(), b[i], b[i].to_bits()))
 }
 
