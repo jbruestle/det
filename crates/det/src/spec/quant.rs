@@ -22,12 +22,22 @@ pub fn quant_act_i8g(x: &[f32], q: &mut [i8], mx: &mut [u16]) -> f32 {
     let g = x.len() / GROUP;
     assert_eq!(g * GROUP, x.len());
     assert_eq!(mx.len(), g);
-    let s_g: Vec<f32> = (0..g).map(|i| absmax(&x[i * GROUP..(i + 1) * GROUP]) / 127.0).collect();
-    let smax = s_g.iter().fold(0.0f32, |m, v| crate::spec::prim::fmax(m, *v));
+    let s_g: Vec<f32> = (0..g)
+        .map(|i| absmax(&x[i * GROUP..(i + 1) * GROUP]) / 127.0)
+        .collect();
+    let smax = s_g
+        .iter()
+        .fold(0.0f32, |m, v| crate::spec::prim::fmax(m, *v));
     let sx = if smax == 0.0 { 1.0 } else { smax / 65535.0 };
     for i in 0..g {
         let m = rint(s_g[i] / sx);
-        let m = if m < 1.0 { 1.0 } else if m > 65535.0 { 65535.0 } else { m };
+        let m = if m < 1.0 {
+            1.0
+        } else if m > 65535.0 {
+            65535.0
+        } else {
+            m
+        };
         mx[i] = m as u16;
         let eff = sx * (mx[i] as f32);
         let inv = 1.0 / eff;
@@ -40,7 +50,13 @@ pub fn quant_act_i8g(x: &[f32], q: &mut [i8], mx: &mut [u16]) -> f32 {
 
 #[inline]
 fn clamp_i8(v: f32) -> i8 {
-    if v < -127.0 { -127 } else if v > 127.0 { 127 } else { v as i8 }
+    if v < -127.0 {
+        -127
+    } else if v > 127.0 {
+        127
+    } else {
+        v as i8
+    }
 }
 
 /// Unpack one row of packed weight codes (`bits` in {4, 6, 8}) into `K` signed codes.

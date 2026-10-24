@@ -24,7 +24,11 @@ pub struct KvRow<'a> {
 
 /// Score of one key: `(f32(dot_i8(qq, kq)) * sq) * sk`.
 pub fn attn_score(qq: &[i8], sq: f32, key: &KvRow) -> f32 {
-    let dot: i32 = qq.iter().zip(key.kq).map(|(a, b)| (*a as i32) * (*b as i32)).sum();
+    let dot: i32 = qq
+        .iter()
+        .zip(key.kq)
+        .map(|(a, b)| (*a as i32) * (*b as i32))
+        .sum();
     ((dot as f32) * sq) * key.sk
 }
 
@@ -52,7 +56,9 @@ pub fn attn_output(num: &[i64], den: i64, v_scale: f32, o: &mut [f32]) {
 
 /// Full attention of one quantized query against all `keys`, before the output gate.
 pub fn attn_head(qq: &[i8], sq: f32, keys: &[KvRow], v_scale: f32, o: &mut [f32]) {
-    let mx = keys.iter().fold(f32::NEG_INFINITY, |m, k| fmax(m, attn_score(qq, sq, k)));
+    let mx = keys
+        .iter()
+        .fold(f32::NEG_INFINITY, |m, k| fmax(m, attn_score(qq, sq, k)));
     let mut num = vec![0i64; o.len()];
     let den = attn_chunk(qq, sq, keys, mx, &mut num);
     attn_output(&num, den, v_scale, o);
@@ -69,7 +75,13 @@ pub fn attn_gate(o: &mut [f32], gate: &[f32]) {
 pub fn quant_v(v: &[f32], v_inv_scale: f32, vq: &mut [i16]) {
     for i in 0..v.len() {
         let r = rint(v[i] * v_inv_scale);
-        vq[i] = if r < -32767.0 { -32767 } else if r > 32767.0 { 32767 } else { r as i16 };
+        vq[i] = if r < -32767.0 {
+            -32767
+        } else if r > 32767.0 {
+            32767
+        } else {
+            r as i16
+        };
     }
 }
 
@@ -94,7 +106,17 @@ pub fn gdn_column_out(col: &[f32], q: &[f32]) -> f32 {
 }
 
 /// Full-state convenience over all columns: `s` is `[dk][dv]` row-major, `o` has length dv.
-pub fn gdn_head_step(s: &mut [f32], dk: usize, dv: usize, k: &[f32], q: &[f32], v: &[f32], beta: f32, decay: f32, o: &mut [f32]) {
+pub fn gdn_head_step(
+    s: &mut [f32],
+    dk: usize,
+    dv: usize,
+    k: &[f32],
+    q: &[f32],
+    v: &[f32],
+    beta: f32,
+    decay: f32,
+    o: &mut [f32],
+) {
     let mut col = vec![0f32; dk];
     for j in 0..dv {
         for i in 0..dk {

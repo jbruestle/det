@@ -67,54 +67,60 @@ pub fn repack(src: &CpuLinear) -> X86Linear {
     let strip_bytes = (c_off + ROWS * 4).next_multiple_of(64);
     let data = Aligned::zeroed(strips * strip_bytes);
     let o = off(bits);
-    data.as_mut_slice().par_chunks_mut(strip_bytes).enumerate().for_each(|(s, d)| {
-        let mut u = vec![0u8; ROWS * k];
-        let mut wq = vec![0i8; k];
-        for r in 0..ROWS {
-            let row = s * ROWS + r;
-            let (c, m) = if row < n {
-                let dr = spec::det_row(bits, k, src.row(row));
-                spec::unpack_row(dr.codes, bits, k, &mut wq);
-                for i in 0..k {
-                    u[r * k + i] = (wq[i] as i32 + o) as u8;
-                }
-                (dr.c, dr.m)
-            } else {
-                u[r * k..(r + 1) * k].fill(o as u8);
-                (0.0, vec![1u16; k / GROUP])
-            };
-            d[c_off + 4 * r..c_off + 4 * r + 4].copy_from_slice(&c.to_le_bytes());
-            for (g, mg) in m.iter().enumerate() {
-                let p = m_off + (g * ROWS + r) * 2;
-                d[p..p + 2].copy_from_slice(&mg.to_le_bytes());
-            }
-        }
-        for b in 0..k / BLOCK {
-            let blk = &mut d[b * bb..(b + 1) * bb];
+    data.as_mut_slice()
+        .par_chunks_mut(strip_bytes)
+        .enumerate()
+        .for_each(|(s, d)| {
+            let mut u = vec![0u8; ROWS * k];
+            let mut wq = vec![0i8; k];
             for r in 0..ROWS {
-                for kk in 0..4 {
-                    let q = |i: usize| u[r * k + b * BLOCK + i * 4 + kk];
-                    let i = r * 4 + kk;
-                    match bits {
-                        8 => {
-                            for qi in 0..4 {
-                                blk[qi * 32 + i] = q(qi);
+                let row = s * ROWS + r;
+                let (c, m) = if row < n {
+                    let dr = spec::det_row(bits, k, src.row(row));
+                    spec::unpack_row(dr.codes, bits, k, &mut wq);
+                    for i in 0..k {
+                        u[r * k + i] = (wq[i] as i32 + o) as u8;
+                    }
+                    (dr.c, dr.m)
+                } else {
+                    u[r * k..(r + 1) * k].fill(o as u8);
+                    (0.0, vec![1u16; k / GROUP])
+                };
+                d[c_off + 4 * r..c_off + 4 * r + 4].copy_from_slice(&c.to_le_bytes());
+                for (g, mg) in m.iter().enumerate() {
+                    let p = m_off + (g * ROWS + r) * 2;
+                    d[p..p + 2].copy_from_slice(&mg.to_le_bytes());
+                }
+            }
+            for b in 0..k / BLOCK {
+                let blk = &mut d[b * bb..(b + 1) * bb];
+                for r in 0..ROWS {
+                    for kk in 0..4 {
+                        let q = |i: usize| u[r * k + b * BLOCK + i * 4 + kk];
+                        let i = r * 4 + kk;
+                        match bits {
+                            8 => {
+                                for qi in 0..4 {
+                                    blk[qi * 32 + i] = q(qi);
+                                }
                             }
-                        }
-                        4 => {
-                            blk[i] = q(0) | q(1) << 4;
-                            blk[32 + i] = q(2) | q(3) << 4;
-                        }
-                        _ => {
-                            blk[i] = (q(0) & 15) | (q(1) & 15) << 4;
-                            blk[32 + i] = (q(2) & 15) | (q(3) & 15) << 4;
-                            blk[64 + i] = (q(0) >> 4) | (q(1) >> 4) << 2 | (q(2) >> 4) << 4 | (q(3) >> 4) << 6;
+                            4 => {
+                                blk[i] = q(0) | q(1) << 4;
+                                blk[32 + i] = q(2) | q(3) << 4;
+                            }
+                            _ => {
+                                blk[i] = (q(0) & 15) | (q(1) & 15) << 4;
+                                blk[32 + i] = (q(2) & 15) | (q(3) & 15) << 4;
+                                blk[64 + i] = (q(0) >> 4)
+                                    | (q(1) >> 4) << 2
+                                    | (q(2) >> 4) << 4
+                                    | (q(3) >> 4) << 6;
+                            }
                         }
                     }
                 }
             }
-        }
-    });
+        });
     X86Linear {
         data,
         widths: src.widths.clone(),
@@ -152,10 +158,19 @@ unsafe fn unpack_block<const BITS: u32>(p: *const u8) -> [__m256i; 4] {
             let two = _mm256_set1_epi8(0x30);
             let (l0, l1, h) = (ld(0), ld(1), ld(2));
             [
-                _mm256_or_si256(_mm256_and_si256(l0, nib), _mm256_and_si256(_mm256_slli_epi16::<4>(h), two)),
-                _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16::<4>(l0), nib), _mm256_and_si256(_mm256_slli_epi16::<2>(h), two)),
+                _mm256_or_si256(
+                    _mm256_and_si256(l0, nib),
+                    _mm256_and_si256(_mm256_slli_epi16::<4>(h), two),
+                ),
+                _mm256_or_si256(
+                    _mm256_and_si256(_mm256_srli_epi16::<4>(l0), nib),
+                    _mm256_and_si256(_mm256_slli_epi16::<2>(h), two),
+                ),
                 _mm256_or_si256(_mm256_and_si256(l1, nib), _mm256_and_si256(h, two)),
-                _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16::<4>(l1), nib), _mm256_and_si256(_mm256_srli_epi16::<2>(h), two)),
+                _mm256_or_si256(
+                    _mm256_and_si256(_mm256_srli_epi16::<4>(l1), nib),
+                    _mm256_and_si256(_mm256_srli_epi16::<2>(h), two),
+                ),
             ]
         }
     }
@@ -166,10 +181,17 @@ unsafe fn unpack_block<const BITS: u32>(p: *const u8) -> [__m256i; 4] {
 #[inline(always)]
 unsafe fn mul_s32_u32(p: __m256i, mm: __m256i) -> (__m256i, __m256i) {
     let neg = _mm256_srai_epi32::<31>(p);
-    let (po, mo, no) = (_mm256_srli_epi64::<32>(p), _mm256_srli_epi64::<32>(mm), _mm256_srli_epi64::<32>(neg));
+    let (po, mo, no) = (
+        _mm256_srli_epi64::<32>(p),
+        _mm256_srli_epi64::<32>(mm),
+        _mm256_srli_epi64::<32>(neg),
+    );
     let fe = _mm256_slli_epi64::<32>(_mm256_and_si256(mm, neg));
     let fo = _mm256_slli_epi64::<32>(_mm256_and_si256(mo, no));
-    (_mm256_sub_epi64(_mm256_mul_epu32(p, mm), fe), _mm256_sub_epi64(_mm256_mul_epu32(po, mo), fo))
+    (
+        _mm256_sub_epi64(_mm256_mul_epu32(p, mm), fe),
+        _mm256_sub_epi64(_mm256_mul_epu32(po, mo), fo),
+    )
 }
 
 struct Item<'a> {
@@ -185,7 +207,14 @@ struct Item<'a> {
 /// `T` tokens from `t` over the unpacked chunk: the group dot products and the int64 accumulation.
 /// `acc[token][strip · 8 + lane]` holds the even rows in lanes 0..4 and the odd rows in 4..8.
 #[inline(always)]
-unsafe fn tile<const VNNI: bool, const BITS: u32, const T: usize>(it: &Item, scratch: *const u8, kc0: usize, groups: usize, t: usize, acc: &mut [[i64; PAIR]]) {
+unsafe fn tile<const VNNI: bool, const BITS: u32, const T: usize>(
+    it: &Item,
+    scratch: *const u8,
+    kc0: usize,
+    groups: usize,
+    t: usize,
+    acc: &mut [[i64; PAIR]],
+) {
     let (k, g_all) = (it.lin.k, it.lin.k / GROUP);
     let o = off(BITS);
     let xrow = |tt: usize| it.xq.as_ptr().add((t + tt) * k + kc0);
@@ -204,7 +233,9 @@ unsafe fn tile<const VNNI: bool, const BITS: u32, const T: usize>(it: &Item, scr
         }
         let m = [
             _mm256_cvtepu16_epi32(_mm_loadu_si128(it.lin.m(2 * it.pair, g) as *const __m128i)),
-            _mm256_cvtepu16_epi32(_mm_loadu_si128(it.lin.m(2 * it.pair + 1, g) as *const __m128i)),
+            _mm256_cvtepu16_epi32(_mm_loadu_si128(
+                it.lin.m(2 * it.pair + 1, g) as *const __m128i
+            )),
         ];
         for tt in 0..T {
             let xs = _mm256_set1_epi32(o * it.xsum[(t + tt) * g_all + g]);
@@ -214,7 +245,10 @@ unsafe fn tile<const VNNI: bool, const BITS: u32, const T: usize>(it: &Item, scr
                 let (even, odd) = mul_s32_u32(p, _mm256_mullo_epi32(m[s], mxv));
                 let dst = acc[t + tt - it.t0].as_mut_ptr().add(s * ROWS) as *mut __m256i;
                 _mm256_storeu_si256(dst, _mm256_add_epi64(_mm256_loadu_si256(dst), even));
-                _mm256_storeu_si256(dst.add(1), _mm256_add_epi64(_mm256_loadu_si256(dst.add(1)), odd));
+                _mm256_storeu_si256(
+                    dst.add(1),
+                    _mm256_add_epi64(_mm256_loadu_si256(dst.add(1)), odd),
+                );
             }
         }
     }
@@ -262,13 +296,25 @@ unsafe fn item_avx2<const BITS: u32>(it: &Item, acc: &mut [[i64; PAIR]]) {
     item::<false, BITS>(it, acc)
 }
 
-pub fn gemm(lin: &X86Linear, vnni: bool, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>, m: usize, out: &GemmOut) {
+pub fn gemm(
+    lin: &X86Linear,
+    vnni: bool,
+    xq: &Buf<i8>,
+    sx: &Buf<f32>,
+    mx: &Buf<u16>,
+    m: usize,
+    out: &GemmOut,
+) {
     let (k, n) = (lin.k, lin.n);
     let g = k / GROUP;
     let xq = &xq.host()[..m * k];
     let (sx, mx) = (&sx.host()[..m], &mx.host()[..m * g]);
     let group_sum = |c: &[i8]| c.iter().map(|v| *v as i32).sum::<i32>();
-    let xsum: Vec<i32> = if m <= 8 { xq.chunks(GROUP).map(group_sum).collect() } else { xq.par_chunks(GROUP).map(group_sum).collect() };
+    let xsum: Vec<i32> = if m <= 8 {
+        xq.chunks(GROUP).map(group_sum).collect()
+    } else {
+        xq.par_chunks(GROUP).map(group_sum).collect()
+    };
     let mut offs = vec![0usize];
     for w in &lin.widths {
         offs.push(offs.last().unwrap() + w);
@@ -278,7 +324,15 @@ pub fn gemm(lin: &X86Linear, vnni: bool, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u
     (0..pairs * tchunks).into_par_iter().for_each(|i| {
         let (pair, tc) = (i % pairs, i / pairs);
         let (t0, t1) = (tc * TC, ((tc + 1) * TC).min(m));
-        let it = Item { lin, pair, xq, xsum: &xsum, mx, t0, t1 };
+        let it = Item {
+            lin,
+            pair,
+            xq,
+            xsum: &xsum,
+            mx,
+            t0,
+            t1,
+        };
         let mut acc = vec![[0i64; PAIR]; t1 - t0];
         unsafe {
             match (vnni, lin.bits) {
@@ -307,7 +361,11 @@ pub fn gemm(lin: &X86Linear, vnni: bool, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u
             for t in t0..t1 {
                 let y = ((acc[t - t0][lane] as f32) * c) * sx[t];
                 let d = unsafe { &mut *dst.add(t * stride + col) };
-                *d = if matches!(out, GemmOut::Accumulate(_)) { *d + y } else { y };
+                *d = if matches!(out, GemmOut::Accumulate(_)) {
+                    *d + y
+                } else {
+                    y
+                };
             }
         }
     });

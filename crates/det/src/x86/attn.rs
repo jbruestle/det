@@ -54,11 +54,21 @@ unsafe fn head<const VNNI: bool>(h: &mut Head) {
     let (mxv, fix) = (_mm256_set1_ps(mx), _mm256_set1_ps(spec::P_FIX));
     for j in (0..npad).step_by(8) {
         let e = exp8(_mm256_sub_ps(_mm256_loadu_ps(scores.as_ptr().add(j)), mxv));
-        _mm256_storeu_si256(pq.as_mut_ptr().add(j) as *mut __m256i, _mm256_cvtps_epi32(_mm256_mul_ps(e, fix)));
+        _mm256_storeu_si256(
+            pq.as_mut_ptr().add(j) as *mut __m256i,
+            _mm256_cvtps_epi32(_mm256_mul_ps(e, fix)),
+        );
     }
     let den: i64 = pq.iter().map(|p| *p as i64).sum();
     let pairs = npad / 2;
-    let pw: Vec<(i32, i32)> = (0..pairs).map(|p| (((pq[2 * p] & 0xFFF) | (pq[2 * p + 1] & 0xFFF) << 16), ((pq[2 * p] >> 12) | (pq[2 * p + 1] >> 12) << 16))).collect();
+    let pw: Vec<(i32, i32)> = (0..pairs)
+        .map(|p| {
+            (
+                ((pq[2 * p] & 0xFFF) | (pq[2 * p + 1] & 0xFFF) << 16),
+                ((pq[2 * p] >> 12) | (pq[2 * p + 1] >> 12) << 16),
+            )
+        })
+        .collect();
     let mut num = vec![0i64; hd];
     for ic in 0..hd / 16 {
         let mut acc = [_mm256_setzero_si256(); 4];
@@ -67,8 +77,12 @@ unsafe fn head<const VNNI: bool>(h: &mut Head) {
             for p in pc..(pc + 4).min(pairs) {
                 let j0 = 2 * p;
                 let j1 = (j0 + 1).min(npos - 1);
-                let v0 = _mm256_loadu_si256(h.vq.add((j0 * n_kv + kvh) * hd + 16 * ic) as *const __m256i);
-                let v1 = _mm256_loadu_si256(h.vq.add((j1 * n_kv + kvh) * hd + 16 * ic) as *const __m256i);
+                let v0 = _mm256_loadu_si256(
+                    h.vq.add((j0 * n_kv + kvh) * hd + 16 * ic) as *const __m256i
+                );
+                let v1 = _mm256_loadu_si256(
+                    h.vq.add((j1 * n_kv + kvh) * hd + 16 * ic) as *const __m256i
+                );
                 let (a, b) = (_mm256_unpacklo_epi16(v0, v1), _mm256_unpackhi_epi16(v0, v1));
                 let (wl, wh) = (_mm256_set1_epi32(pw[p].0), _mm256_set1_epi32(pw[p].1));
                 part[0] = dp16::<VNNI>(part[0], a, wl);
@@ -101,66 +115,93 @@ unsafe fn head_avx2(h: &mut Head) {
     head::<false>(h)
 }
 
-pub fn attention(vnni: bool, l: &AttnLayer, kv: &KvCache, s: &Shape, qg: &Buf<f32>, k: &Buf<f32>, v: &Buf<f32>, o: &Buf<f32>) {
+pub fn attention(
+    vnni: bool,
+    l: &AttnLayer,
+    kv: &KvCache,
+    s: &Shape,
+    qg: &Buf<f32>,
+    k: &Buf<f32>,
+    v: &Buf<f32>,
+    o: &Buf<f32>,
+) {
     let (n_h, n_kv, hd, half, m, pos0) = (s.n_h, s.n_kv, s.hd, s.rot / 2, s.m, s.pos0);
     assert!(hd.is_multiple_of(32) && hd <= 512);
     let rep = n_h / n_kv;
     let qscale = 1.0f32 / (hd as f32).sqrt();
-    assert_eq!(qscale.to_bits().trailing_zeros(), 23, "qscale must be a power of two");
+    assert_eq!(
+        qscale.to_bits().trailing_zeros(),
+        23,
+        "qscale must be a power of two"
+    );
     let (kq, sk, vq) = (kv.kq.host_mut(), kv.sk.host_mut(), kv.vq.host_mut());
-    let rope = |pos: usize| (&l.rope_cos.host()[pos * half..(pos + 1) * half], &l.rope_sin.host()[pos * half..(pos + 1) * half]);
+    let rope = |pos: usize| {
+        (
+            &l.rope_cos.host()[pos * half..(pos + 1) * half],
+            &l.rope_sin.host()[pos * half..(pos + 1) * half],
+        )
+    };
     let kqp = kq.as_mut_ptr() as usize;
     let vqp = vq.as_mut_ptr() as usize;
-    sk[pos0 * n_kv..(pos0 + m) * n_kv].par_iter_mut().enumerate().for_each(|(i, skr)| {
-        let (t, h) = (i / n_kv, i % n_kv);
-        let pos = pos0 + t;
-        let (rc, rs) = rope(pos);
-        let kr = &k.host()[(t * n_kv + h) * hd..(t * n_kv + h + 1) * hd];
-        let mut kn = vec![0f32; hd];
-        spec::rmsnorm(kr, &l.k_norm.host()[..hd], s.eps, &mut kn);
-        spec::rope(&mut kn, rc, rs);
-        let row = (pos * n_kv + h) * hd;
-        let kqr = unsafe { std::slice::from_raw_parts_mut((kqp as *mut i8).add(row), hd) };
-        let vqr = unsafe { std::slice::from_raw_parts_mut((vqp as *mut i16).add(row), hd) };
-        *skr = spec::quant_act_i8(&kn, kqr);
-        let vr = &v.host()[(t * n_kv + h) * hd..(t * n_kv + h + 1) * hd];
-        spec::quant_v(vr, l.v_inv_scale.host()[h], vqr);
-    });
-    o.host_mut()[..m * n_h * hd].par_chunks_mut(hd).enumerate().for_each(|(i, oh)| {
-        let (t, h) = (i / n_h, i % n_h);
-        let pos = pos0 + t;
-        let (rc, rs) = rope(pos);
-        let base = (t * n_h + h) * 2 * hd;
-        let (qr, gate) = (&qg.host()[base..base + hd], &qg.host()[base + hd..base + 2 * hd]);
-        let mut qn = vec![0f32; hd];
-        spec::rmsnorm(qr, &l.q_norm.host()[..hd], s.eps, &mut qn);
-        spec::rope(&mut qn, rc, rs);
-        for x in qn.iter_mut() {
-            *x = *x * qscale;
-        }
-        let mut qq = vec![0i8; hd];
-        let sq = spec::quant_act_i8(&qn, &mut qq);
-        let kvh = h / rep;
-        let mut hh = Head {
-            kq: kq.as_ptr(),
-            sk: sk.as_ptr(),
-            vq: vq.as_ptr(),
-            n_kv,
-            hd,
-            kvh,
-            npos: pos + 1,
-            qq: &qq,
-            sq,
-            v_scale: l.v_scale.host()[kvh],
-            o: oh,
-        };
-        unsafe {
-            if vnni {
-                head_vnni(&mut hh)
-            } else {
-                head_avx2(&mut hh)
+    sk[pos0 * n_kv..(pos0 + m) * n_kv]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, skr)| {
+            let (t, h) = (i / n_kv, i % n_kv);
+            let pos = pos0 + t;
+            let (rc, rs) = rope(pos);
+            let kr = &k.host()[(t * n_kv + h) * hd..(t * n_kv + h + 1) * hd];
+            let mut kn = vec![0f32; hd];
+            spec::rmsnorm(kr, &l.k_norm.host()[..hd], s.eps, &mut kn);
+            spec::rope(&mut kn, rc, rs);
+            let row = (pos * n_kv + h) * hd;
+            let kqr = unsafe { std::slice::from_raw_parts_mut((kqp as *mut i8).add(row), hd) };
+            let vqr = unsafe { std::slice::from_raw_parts_mut((vqp as *mut i16).add(row), hd) };
+            *skr = spec::quant_act_i8(&kn, kqr);
+            let vr = &v.host()[(t * n_kv + h) * hd..(t * n_kv + h + 1) * hd];
+            spec::quant_v(vr, l.v_inv_scale.host()[h], vqr);
+        });
+    o.host_mut()[..m * n_h * hd]
+        .par_chunks_mut(hd)
+        .enumerate()
+        .for_each(|(i, oh)| {
+            let (t, h) = (i / n_h, i % n_h);
+            let pos = pos0 + t;
+            let (rc, rs) = rope(pos);
+            let base = (t * n_h + h) * 2 * hd;
+            let (qr, gate) = (
+                &qg.host()[base..base + hd],
+                &qg.host()[base + hd..base + 2 * hd],
+            );
+            let mut qn = vec![0f32; hd];
+            spec::rmsnorm(qr, &l.q_norm.host()[..hd], s.eps, &mut qn);
+            spec::rope(&mut qn, rc, rs);
+            for x in qn.iter_mut() {
+                *x = *x * qscale;
             }
-        }
-        spec::attn_gate(oh, gate);
-    });
+            let mut qq = vec![0i8; hd];
+            let sq = spec::quant_act_i8(&qn, &mut qq);
+            let kvh = h / rep;
+            let mut hh = Head {
+                kq: kq.as_ptr(),
+                sk: sk.as_ptr(),
+                vq: vq.as_ptr(),
+                n_kv,
+                hd,
+                kvh,
+                npos: pos + 1,
+                qq: &qq,
+                sq,
+                v_scale: l.v_scale.host()[kvh],
+                o: oh,
+            };
+            unsafe {
+                if vnni {
+                    head_vnni(&mut hh)
+                } else {
+                    head_avx2(&mut hh)
+                }
+            }
+            spec::attn_gate(oh, gate);
+        });
 }

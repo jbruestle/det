@@ -32,21 +32,44 @@ impl<T: Copy> Buf<T> {
     /// # Safety
     /// `ptr` must stay valid for `len` elements until `release` runs.
     pub unsafe fn from_device(ptr: *mut T, len: usize, release: unsafe fn(*mut u8)) -> Self {
-        Buf { ptr, len, owner: Owner::Device(release), _p: PhantomData }
+        Buf {
+            ptr,
+            len,
+            owner: Owner::Device(release),
+            _p: PhantomData,
+        }
     }
     /// A non-owning window into another buffer's memory.
     ///
     /// # Safety
     /// The memory must outlive the view and hold `len` elements.
     pub unsafe fn view(ptr: *mut T, len: usize) -> Self {
-        Buf { ptr, len, owner: Owner::View, _p: PhantomData }
+        Buf {
+            ptr,
+            len,
+            owner: Owner::View,
+            _p: PhantomData,
+        }
     }
     /// A zeroed host buffer, 64-byte aligned.
     pub fn new_host(len: usize) -> Self {
         let layout = host_layout::<T>(len);
-        let ptr = if layout.size() == 0 { layout.align() as *mut T } else { unsafe { std::alloc::alloc_zeroed(layout) as *mut T } };
-        assert!(!ptr.is_null(), "allocation of {} bytes failed", layout.size());
-        Buf { ptr, len, owner: Owner::Host, _p: PhantomData }
+        let ptr = if layout.size() == 0 {
+            layout.align() as *mut T
+        } else {
+            unsafe { std::alloc::alloc_zeroed(layout) as *mut T }
+        };
+        assert!(
+            !ptr.is_null(),
+            "allocation of {} bytes failed",
+            layout.size()
+        );
+        Buf {
+            ptr,
+            len,
+            owner: Owner::Host,
+            _p: PhantomData,
+        }
     }
     pub fn host_from(data: &[T]) -> Self {
         let b = Self::new_host(data.len());
@@ -88,7 +111,11 @@ impl<T: Copy> Buf<T> {
 }
 
 fn host_layout<T>(len: usize) -> std::alloc::Layout {
-    std::alloc::Layout::array::<T>(len).unwrap().align_to(64).unwrap().pad_to_align()
+    std::alloc::Layout::array::<T>(len)
+        .unwrap()
+        .align_to(64)
+        .unwrap()
+        .pad_to_align()
 }
 
 impl<T> Drop for Buf<T> {
@@ -204,17 +231,72 @@ pub trait Backend: Sized + crate::hooks::Reader {
     fn linear_widths(lin: &Self::Linear) -> &[usize];
 
     /// `y = rmsnorm(x, w, eps)` per row (`m` rows of `n`), quantized to `xq`, `sx`, `mx` (`y` is not kept).
-    fn rmsnorm_quant(&self, x: &Buf<f32>, w: &Buf<f32>, eps: f32, m: usize, n: usize, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>);
+    fn rmsnorm_quant(
+        &self,
+        x: &Buf<f32>,
+        w: &Buf<f32>,
+        eps: f32,
+        m: usize,
+        n: usize,
+        xq: &Buf<i8>,
+        sx: &Buf<f32>,
+        mx: &Buf<u16>,
+    );
     fn quant(&self, x: &Buf<f32>, m: usize, n: usize, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>);
-    fn gemm(&self, lin: &Self::Linear, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>, m: usize, out: GemmOut);
+    fn gemm(
+        &self,
+        lin: &Self::Linear,
+        xq: &Buf<i8>,
+        sx: &Buf<f32>,
+        mx: &Buf<u16>,
+        m: usize,
+        out: GemmOut,
+    );
     /// `h = silu(g) * u`, quantized.
-    fn silu_mul_quant(&self, g: &Buf<f32>, u: &Buf<f32>, m: usize, n: usize, hq: &Buf<i8>, sh: &Buf<f32>, mh: &Buf<u16>);
+    fn silu_mul_quant(
+        &self,
+        g: &Buf<f32>,
+        u: &Buf<f32>,
+        m: usize,
+        n: usize,
+        hq: &Buf<i8>,
+        sh: &Buf<f32>,
+        mh: &Buf<u16>,
+    );
     /// Full attention for `m` new tokens at `pos0..`: writes the KV rows, computes every new token against
     /// all positions up to its own, applies the output gate and writes `o[m][n_h·hd]`.
-    fn attention(&self, l: &AttnLayer, kv: &KvCache, s: &Shape, qg: &Buf<f32>, k: &Buf<f32>, v: &Buf<f32>, o: &Buf<f32>);
+    fn attention(
+        &self,
+        l: &AttnLayer,
+        kv: &KvCache,
+        s: &Shape,
+        qg: &Buf<f32>,
+        k: &Buf<f32>,
+        v: &Buf<f32>,
+        o: &Buf<f32>,
+    );
     /// Gated DeltaNet over `m` tokens in order; writes `on[m][n_v·dv]` after the gated norm.
-    fn gdn(&self, l: &GdnLayer, st: &GdnState, s: &GdnShape, qkv: &Buf<f32>, z: &Buf<f32>, a: &Buf<f32>, b: &Buf<f32>, on: &Buf<f32>, ex: GdnExport);
+    fn gdn(
+        &self,
+        l: &GdnLayer,
+        st: &GdnState,
+        s: &GdnShape,
+        qkv: &Buf<f32>,
+        z: &Buf<f32>,
+        a: &Buf<f32>,
+        b: &Buf<f32>,
+        on: &Buf<f32>,
+        ex: GdnExport,
+    );
     fn argmax(&self, logits: &Buf<f32>, v: usize) -> i32;
     /// Sampling with the raw splitmix64 draw `z` (`top_k` 0 and `top_p` ≥ 1 disable the filters).
-    fn sample(&self, logits: &Buf<f32>, v: usize, inv_temp: f32, top_k: usize, top_p: f32, z: u64) -> i32;
+    fn sample(
+        &self,
+        logits: &Buf<f32>,
+        v: usize,
+        inv_temp: f32,
+        top_k: usize,
+        top_p: f32,
+        z: u64,
+    ) -> i32;
 }

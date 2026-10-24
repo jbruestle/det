@@ -5,7 +5,13 @@ use det::conformance::{self, Report};
 
 fn check(r: Report) {
     let failures: Vec<String> = r.failures().map(|(n, m)| format!("{n}: {m}")).collect();
-    assert!(failures.is_empty(), "{} of {} checks failed:\n{}", failures.len(), r.checks.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} checks failed:\n{}",
+        failures.len(),
+        r.checks.len(),
+        failures.join("\n")
+    );
 }
 
 #[cfg(any(all(feature = "metal", target_os = "macos"), feature = "cuda"))]

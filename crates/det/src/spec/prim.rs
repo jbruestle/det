@@ -40,8 +40,16 @@ pub const SIGMOID_LO: f32 = -80.0;
 #[inline]
 pub fn fmin(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
-        if a.is_nan() { a } else { b }
-    } else if a < b || (a == b && a.is_sign_negative()) { a } else { b }
+        if a.is_nan() {
+            a
+        } else {
+            b
+        }
+    } else if a < b || (a == b && a.is_sign_negative()) {
+        a
+    } else {
+        b
+    }
 }
 
 /// The larger operand, with -0 below +0 (so the result does not depend on the operand order); a NaN
@@ -49,8 +57,16 @@ pub fn fmin(a: f32, b: f32) -> f32 {
 #[inline]
 pub fn fmax(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
-        if a.is_nan() { a } else { b }
-    } else if a > b || (a == b && b.is_sign_negative()) { a } else { b }
+        if a.is_nan() {
+            a
+        } else {
+            b
+        }
+    } else if a > b || (a == b && b.is_sign_negative()) {
+        a
+    } else {
+        b
+    }
 }
 
 /// `np.rint`: round half to even.

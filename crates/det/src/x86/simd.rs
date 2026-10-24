@@ -34,7 +34,12 @@ impl Aligned {
 
 impl Drop for Aligned {
     fn drop(&mut self) {
-        unsafe { dealloc(self.ptr, Layout::from_size_align(self.len.max(64), 64).unwrap()) }
+        unsafe {
+            dealloc(
+                self.ptr,
+                Layout::from_size_align(self.len.max(64), 64).unwrap(),
+            )
+        }
     }
 }
 
@@ -42,7 +47,11 @@ impl Drop for Aligned {
 /// VNNI. The maddubs form saturates its 16-bit pair sums, so it is exact only for `u ≤ 127`: W8 codes
 /// (`u = wq + 128 ≤ 255`) go through their two nibbles.
 #[inline(always)]
-pub unsafe fn dp<const VNNI: bool, const BITS: u32>(acc: __m256i, u: __m256i, x: __m256i) -> __m256i {
+pub unsafe fn dp<const VNNI: bool, const BITS: u32>(
+    acc: __m256i,
+    u: __m256i,
+    x: __m256i,
+) -> __m256i {
     if VNNI {
         _mm256_dpbusd_avx_epi32(acc, u, x)
     } else if BITS == 8 {
@@ -54,7 +63,10 @@ pub unsafe fn dp<const VNNI: bool, const BITS: u32>(acc: __m256i, u: __m256i, x:
         let b = _mm256_madd_epi16(_mm256_maddubs_epi16(hi, x), ones);
         _mm256_add_epi32(acc, _mm256_add_epi32(a, _mm256_slli_epi32::<4>(b)))
     } else {
-        _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(u, x), _mm256_set1_epi16(1)))
+        _mm256_add_epi32(
+            acc,
+            _mm256_madd_epi16(_mm256_maddubs_epi16(u, x), _mm256_set1_epi16(1)),
+        )
     }
 }
 
@@ -81,7 +93,10 @@ pub unsafe fn hsum_epi32(v: __m256i) -> i32 {
 pub unsafe fn exp8(x: __m256) -> __m256 {
     let x = _mm256_min_ps(x, _mm256_set1_ps(EXP_HI));
     let under = _mm256_cmp_ps::<_CMP_LT_OQ>(x, _mm256_set1_ps(EXP_LO));
-    let n = _mm256_floor_ps(_mm256_add_ps(_mm256_mul_ps(x, _mm256_set1_ps(LOG2E)), _mm256_set1_ps(0.5)));
+    let n = _mm256_floor_ps(_mm256_add_ps(
+        _mm256_mul_ps(x, _mm256_set1_ps(LOG2E)),
+        _mm256_set1_ps(0.5),
+    ));
     let r = _mm256_sub_ps(x, _mm256_mul_ps(n, _mm256_set1_ps(EXP_C1)));
     let r = _mm256_sub_ps(r, _mm256_mul_ps(n, _mm256_set1_ps(EXP_C2)));
     let z = _mm256_mul_ps(r, r);
@@ -91,7 +106,10 @@ pub unsafe fn exp8(x: __m256) -> __m256 {
     }
     y = _mm256_add_ps(_mm256_mul_ps(y, z), r);
     y = _mm256_add_ps(y, _mm256_set1_ps(1.0));
-    let e = _mm256_slli_epi32::<23>(_mm256_add_epi32(_mm256_cvtps_epi32(n), _mm256_set1_epi32(127)));
+    let e = _mm256_slli_epi32::<23>(_mm256_add_epi32(
+        _mm256_cvtps_epi32(n),
+        _mm256_set1_epi32(127),
+    ));
     let y = _mm256_mul_ps(y, _mm256_castsi256_ps(e));
     _mm256_andnot_ps(under, y)
 }
@@ -103,7 +121,10 @@ pub unsafe fn sigmoid8(x: __m256) -> __m256 {
     let under = _mm256_cmp_ps::<_CMP_LT_OQ>(x, lo);
     let xs = _mm256_max_ps(x, lo);
     let neg = _mm256_xor_ps(xs, _mm256_set1_ps(-0.0));
-    let r = _mm256_div_ps(_mm256_set1_ps(1.0), _mm256_add_ps(_mm256_set1_ps(1.0), exp8(neg)));
+    let r = _mm256_div_ps(
+        _mm256_set1_ps(1.0),
+        _mm256_add_ps(_mm256_set1_ps(1.0), exp8(neg)),
+    );
     _mm256_blendv_ps(r, exp8(x), under)
 }
 

@@ -47,7 +47,10 @@ pub struct DetRow<'a> {
 }
 
 pub fn det_row_bytes(bits: u32, k: usize) -> usize {
-    assert!(k.is_multiple_of(GROUP), "K = {k} is not a multiple of {GROUP}");
+    assert!(
+        k.is_multiple_of(GROUP),
+        "K = {k} is not a multiple of {GROUP}"
+    );
     k / 32 * bytes_per_32(bits) + 4 + k / GROUP * 2
 }
 
@@ -55,8 +58,15 @@ pub fn det_row(bits: u32, k: usize, row: &[u8]) -> DetRow<'_> {
     let nc = k / 32 * bytes_per_32(bits);
     assert_eq!(row.len(), det_row_bytes(bits, k));
     let c = f32::from_le_bytes(row[nc..nc + 4].try_into().unwrap());
-    let m = row[nc + 4..].chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-    DetRow { codes: &row[..nc], c, m }
+    let m = row[nc + 4..]
+        .chunks(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    DetRow {
+        codes: &row[..nc],
+        c,
+        m,
+    }
 }
 
 /// Dequantizes one row of `k` elements: float types exactly; det rows as `(c · f32(m[g])) · f32(q)`.
@@ -75,7 +85,10 @@ pub fn dequant_row(ty: GgmlType, row: &[u8], k: usize, out: &mut [f32]) {
         }
         GgmlType::BF16 => {
             for i in 0..k {
-                out[i] = crate::spec::prim::bf16_to_f32(u16::from_le_bytes([row[2 * i], row[2 * i + 1]]));
+                out[i] = crate::spec::prim::bf16_to_f32(u16::from_le_bytes([
+                    row[2 * i],
+                    row[2 * i + 1],
+                ]));
             }
         }
         GgmlType::Det4 | GgmlType::Det6 | GgmlType::Det8 => {

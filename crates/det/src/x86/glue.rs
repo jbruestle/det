@@ -59,7 +59,10 @@ unsafe fn quant_row(x: &[f32], q: &mut [i8], mx: &mut [u16]) -> f32 {
     for gi in 0..g {
         let mut m = _mm256_setzero_ps();
         for c in 0..GROUP / 8 {
-            m = _mm256_max_ps(m, _mm256_andnot_ps(sign, _mm256_loadu_ps(x.as_ptr().add(gi * GROUP + 8 * c))));
+            m = _mm256_max_ps(
+                m,
+                _mm256_andnot_ps(sign, _mm256_loadu_ps(x.as_ptr().add(gi * GROUP + 8 * c))),
+            );
         }
         let mut a = [0f32; 8];
         _mm256_storeu_ps(a.as_mut_ptr(), m);
@@ -83,15 +86,32 @@ unsafe fn quant_row(x: &[f32], q: &mut [i8], mx: &mut [u16]) -> f32 {
         for c in 0..GROUP / 32 {
             // clamp_i8: beyond ±127 saturates, NaN (0 · inf in an all-denormal row) is 0, as `as i8` does
             let cv = |i: usize| {
-                let v = _mm256_mul_ps(_mm256_loadu_ps(x.as_ptr().add(gi * GROUP + 32 * c + 8 * i)), inv);
+                let v = _mm256_mul_ps(
+                    _mm256_loadu_ps(x.as_ptr().add(gi * GROUP + 32 * c + 8 * i)),
+                    inv,
+                );
                 let r = _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(v);
                 let q = _mm256_cvtps_epi32(r);
-                let q = _mm256_blendv_epi8(q, _mm256_set1_epi32(127), _mm256_castps_si256(_mm256_cmp_ps::<_CMP_GT_OQ>(r, hi)));
-                let q = _mm256_blendv_epi8(q, _mm256_set1_epi32(-127), _mm256_castps_si256(_mm256_cmp_ps::<_CMP_LT_OQ>(r, lo)));
+                let q = _mm256_blendv_epi8(
+                    q,
+                    _mm256_set1_epi32(127),
+                    _mm256_castps_si256(_mm256_cmp_ps::<_CMP_GT_OQ>(r, hi)),
+                );
+                let q = _mm256_blendv_epi8(
+                    q,
+                    _mm256_set1_epi32(-127),
+                    _mm256_castps_si256(_mm256_cmp_ps::<_CMP_LT_OQ>(r, lo)),
+                );
                 _mm256_andnot_si256(_mm256_castps_si256(_mm256_cmp_ps::<_CMP_UNORD_Q>(r, r)), q)
             };
-            let b = _mm256_packs_epi16(_mm256_packs_epi32(cv(0), cv(1)), _mm256_packs_epi32(cv(2), cv(3)));
-            _mm256_storeu_si256(q.as_mut_ptr().add(gi * GROUP + 32 * c) as *mut __m256i, _mm256_permutevar8x32_epi32(b, order));
+            let b = _mm256_packs_epi16(
+                _mm256_packs_epi32(cv(0), cv(1)),
+                _mm256_packs_epi32(cv(2), cv(3)),
+            );
+            _mm256_storeu_si256(
+                q.as_mut_ptr().add(gi * GROUP + 32 * c) as *mut __m256i,
+                _mm256_permutevar8x32_epi32(b, order),
+            );
         }
     }
     sx
@@ -104,7 +124,10 @@ pub unsafe fn rmsnorm_row(x: &[f32], w: &[f32], eps: f32, y: &mut [f32], tmp: &m
     let inv = _mm256_set1_ps(spec::rsqrt_f(ss / (n as f32) + eps));
     let mut i = 0;
     while i + 8 <= n {
-        let v = _mm256_mul_ps(_mm256_mul_ps(_mm256_loadu_ps(x.as_ptr().add(i)), inv), _mm256_loadu_ps(w.as_ptr().add(i)));
+        let v = _mm256_mul_ps(
+            _mm256_mul_ps(_mm256_loadu_ps(x.as_ptr().add(i)), inv),
+            _mm256_loadu_ps(w.as_ptr().add(i)),
+        );
         _mm256_storeu_ps(y.as_mut_ptr().add(i), v);
         i += 8;
     }
@@ -116,29 +139,58 @@ pub unsafe fn l2norm_row(x: &[f32], eps: f32, scale: f32, y: &mut [f32], tmp: &m
     let inv = spec::rsqrt_f(treesum_sq(x, tmp) + eps);
     let (inv, scale) = (_mm256_set1_ps(inv), _mm256_set1_ps(scale));
     for i in (0..x.len()).step_by(8) {
-        _mm256_storeu_ps(y.as_mut_ptr().add(i), _mm256_mul_ps(_mm256_mul_ps(_mm256_loadu_ps(x.as_ptr().add(i)), inv), scale));
+        _mm256_storeu_ps(
+            y.as_mut_ptr().add(i),
+            _mm256_mul_ps(
+                _mm256_mul_ps(_mm256_loadu_ps(x.as_ptr().add(i)), inv),
+                scale,
+            ),
+        );
     }
 }
 
 /// `y = rmsnorm(x, w, eps) · silu(z)`
 #[target_feature(enable = "avx2")]
-pub unsafe fn rmsnorm_silu_row(x: &[f32], w: &[f32], eps: f32, z: &[f32], y: &mut [f32], tmp: &mut Vec<f32>) {
+pub unsafe fn rmsnorm_silu_row(
+    x: &[f32],
+    w: &[f32],
+    eps: f32,
+    z: &[f32],
+    y: &mut [f32],
+    tmp: &mut Vec<f32>,
+) {
     rmsnorm_row(x, w, eps, y, tmp);
     for i in (0..x.len()).step_by(8) {
-        _mm256_storeu_ps(y.as_mut_ptr().add(i), _mm256_mul_ps(_mm256_loadu_ps(y.as_ptr().add(i)), silu8(_mm256_loadu_ps(z.as_ptr().add(i)))));
+        _mm256_storeu_ps(
+            y.as_mut_ptr().add(i),
+            _mm256_mul_ps(
+                _mm256_loadu_ps(y.as_ptr().add(i)),
+                silu8(_mm256_loadu_ps(z.as_ptr().add(i))),
+            ),
+        );
     }
 }
 
 #[target_feature(enable = "avx2")]
 unsafe fn silu_mul_row(g: &[f32], u: &[f32], h: &mut [f32]) {
     for i in (0..g.len()).step_by(8) {
-        let v = _mm256_mul_ps(silu8(_mm256_loadu_ps(g.as_ptr().add(i))), _mm256_loadu_ps(u.as_ptr().add(i)));
+        let v = _mm256_mul_ps(
+            silu8(_mm256_loadu_ps(g.as_ptr().add(i))),
+            _mm256_loadu_ps(u.as_ptr().add(i)),
+        );
         _mm256_storeu_ps(h.as_mut_ptr().add(i), v);
     }
 }
 
 /// `f(row, codes, multipliers) -> scale` over the `m` rows of `n`, in parallel.
-fn each_row(xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>, m: usize, n: usize, f: impl Fn(usize, &mut [i8], &mut [u16]) -> f32 + Sync) {
+fn each_row(
+    xq: &Buf<i8>,
+    sx: &Buf<f32>,
+    mx: &Buf<u16>,
+    m: usize,
+    n: usize,
+    f: impl Fn(usize, &mut [i8], &mut [u16]) -> f32 + Sync,
+) {
     assert!(n.is_multiple_of(GROUP));
     xq.host_mut()[..m * n]
         .par_chunks_mut(n)
@@ -148,23 +200,52 @@ fn each_row(xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>, m: usize, n: usize, f: i
         .for_each(|(t, ((q, mxr), sxr))| *sxr = f(t, q, mxr));
 }
 
-pub fn rmsnorm_quant(x: &Buf<f32>, w: &Buf<f32>, eps: f32, m: usize, n: usize, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>) {
+pub fn rmsnorm_quant(
+    x: &Buf<f32>,
+    w: &Buf<f32>,
+    eps: f32,
+    m: usize,
+    n: usize,
+    xq: &Buf<i8>,
+    sx: &Buf<f32>,
+    mx: &Buf<u16>,
+) {
     let w = &w.host()[..n];
     each_row(xq, sx, mx, m, n, |t, q, mxr| unsafe {
         let mut y = vec![0f32; n];
-        rmsnorm_row(&x.host()[t * n..(t + 1) * n], w, eps, &mut y, &mut Vec::new());
+        rmsnorm_row(
+            &x.host()[t * n..(t + 1) * n],
+            w,
+            eps,
+            &mut y,
+            &mut Vec::new(),
+        );
         quant_row(&y, q, mxr)
     });
 }
 
 pub fn quant(x: &Buf<f32>, m: usize, n: usize, xq: &Buf<i8>, sx: &Buf<f32>, mx: &Buf<u16>) {
-    each_row(xq, sx, mx, m, n, |t, q, mxr| unsafe { quant_row(&x.host()[t * n..(t + 1) * n], q, mxr) });
+    each_row(xq, sx, mx, m, n, |t, q, mxr| unsafe {
+        quant_row(&x.host()[t * n..(t + 1) * n], q, mxr)
+    });
 }
 
-pub fn silu_mul_quant(g: &Buf<f32>, u: &Buf<f32>, m: usize, n: usize, hq: &Buf<i8>, sh: &Buf<f32>, mh: &Buf<u16>) {
+pub fn silu_mul_quant(
+    g: &Buf<f32>,
+    u: &Buf<f32>,
+    m: usize,
+    n: usize,
+    hq: &Buf<i8>,
+    sh: &Buf<f32>,
+    mh: &Buf<u16>,
+) {
     each_row(hq, sh, mh, m, n, |t, q, mxr| unsafe {
         let mut h = vec![0f32; n];
-        silu_mul_row(&g.host()[t * n..(t + 1) * n], &u.host()[t * n..(t + 1) * n], &mut h);
+        silu_mul_row(
+            &g.host()[t * n..(t + 1) * n],
+            &u.host()[t * n..(t + 1) * n],
+            &mut h,
+        );
         quant_row(&h, q, mxr)
     });
 }

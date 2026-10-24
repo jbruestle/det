@@ -18,7 +18,12 @@ pub fn pack(codes: &[i8], bits: u32, out: &mut Vec<u8>) {
             6 => {
                 let u: Vec<u8> = blk.iter().map(|&q| (q + 32) as u8).collect();
                 out.extend((0..16).map(|i| (u[i] & 0xF) | ((u[i + 16] & 0xF) << 4)));
-                out.extend((0..8).map(|i| (u[i] >> 4) | ((u[i + 8] >> 4) << 2) | ((u[i + 16] >> 4) << 4) | ((u[i + 24] >> 4) << 6)));
+                out.extend((0..8).map(|i| {
+                    (u[i] >> 4)
+                        | ((u[i + 8] >> 4) << 2)
+                        | ((u[i + 16] >> 4) << 4)
+                        | ((u[i + 24] >> 4) << 6)
+                }));
             }
             _ => panic!("unsupported bit width {bits}"),
         }
@@ -34,11 +39,14 @@ fn group_scale(w: &[f64], qmax: f64) -> f64 {
     let mut best = (f64::INFINITY, base);
     for step in 0..=10 {
         let s = base * (0.80 + 0.02 * step as f64);
-        let err: f64 = w.iter().map(|&v| {
-            let q = (v / s).round_ties_even().clamp(-qmax, qmax);
-            let d = q * s - v;
-            d * d
-        }).sum();
+        let err: f64 = w
+            .iter()
+            .map(|&v| {
+                let q = (v / s).round_ties_even().clamp(-qmax, qmax);
+                let d = q * s - v;
+                d * d
+            })
+            .sum();
         if err < best.0 {
             best = (err, s);
         }
@@ -55,7 +63,10 @@ pub fn quantize_row(w: &[f32], bits: u32, out: &mut Vec<u8>) {
     let scales: Vec<f64> = wd.chunks(GROUP).map(|g| group_scale(g, qmax)).collect();
     let smax = scales.iter().cloned().fold(0.0f64, f64::max);
     let c = (smax / 65535.0) as f32;
-    let m: Vec<u16> = scales.iter().map(|&s| (s / c as f64).round_ties_even().clamp(1.0, 65535.0) as u16).collect();
+    let m: Vec<u16> = scales
+        .iter()
+        .map(|&s| (s / c as f64).round_ties_even().clamp(1.0, 65535.0) as u16)
+        .collect();
     let mut codes = vec![0i8; k];
     for (g, &mg) in m.iter().enumerate() {
         let eff = c as f64 * mg as f64;
@@ -78,11 +89,13 @@ pub fn quantize_rows(w: &[f32], n: usize, k: usize, bits: u32) -> Vec<u8> {
     assert_eq!(w.len(), n * k);
     let rb = det_row_bytes(bits, k);
     let mut out = vec![0u8; n * rb];
-    out.par_chunks_mut(rb).zip(w.par_chunks(k)).for_each(|(dst, row)| {
-        let mut v = Vec::with_capacity(rb);
-        quantize_row(row, bits, &mut v);
-        dst.copy_from_slice(&v);
-    });
+    out.par_chunks_mut(rb)
+        .zip(w.par_chunks(k))
+        .for_each(|(dst, row)| {
+            let mut v = Vec::with_capacity(rb);
+            quantize_row(row, bits, &mut v);
+            dst.copy_from_slice(&v);
+        });
     out
 }
 
@@ -95,7 +108,9 @@ mod tests {
     #[test]
     fn pack_roundtrip_and_error() {
         let k = 512;
-        let w: Vec<f32> = (0..k).map(|i| (((i * 7919) % 1000) as f32 / 500.0 - 1.0) * 0.05 * (1.0 + (i / 128) as f32)).collect();
+        let w: Vec<f32> = (0..k)
+            .map(|i| (((i * 7919) % 1000) as f32 / 500.0 - 1.0) * 0.05 * (1.0 + (i / 128) as f32))
+            .collect();
         for bits in [4, 6, 8] {
             let mut row = Vec::new();
             quantize_row(&w, bits, &mut row);
@@ -109,9 +124,16 @@ mod tests {
             dequant_row(GgmlType::det(bits), &row, k, &mut back);
             let qmax = ((1 << (bits - 1)) - 1) as f32;
             for g in 0..k / 128 {
-                let amax = w[g * 128..(g + 1) * 128].iter().fold(0f32, |m, v| m.max(v.abs()));
+                let amax = w[g * 128..(g + 1) * 128]
+                    .iter()
+                    .fold(0f32, |m, v| m.max(v.abs()));
                 for i in g * 128..(g + 1) * 128 {
-                    assert!((back[i] - w[i]).abs() <= amax / qmax, "W{bits} element {i}: {} vs {}", back[i], w[i]);
+                    assert!(
+                        (back[i] - w[i]).abs() <= amax / qmax,
+                        "W{bits} element {i}: {} vs {}",
+                        back[i],
+                        w[i]
+                    );
                 }
             }
         }

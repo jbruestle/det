@@ -150,10 +150,13 @@ pub fn ggml_type_name(id: u32) -> String {
         return t.name().to_string();
     }
     const NAMES: [&str; 31] = [
-        "F32", "F16", "Q4_0", "Q4_1", "?4", "?5", "Q5_0", "Q5_1", "Q8_0", "Q8_1", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_K",
-        "IQ2_XXS", "IQ2_XS", "IQ3_XXS", "IQ1_S", "IQ4_NL", "IQ3_S", "IQ2_S", "IQ4_XS", "I8", "I16", "I32", "I64", "F64", "IQ1_M", "BF16",
+        "F32", "F16", "Q4_0", "Q4_1", "?4", "?5", "Q5_0", "Q5_1", "Q8_0", "Q8_1", "Q2_K", "Q3_K",
+        "Q4_K", "Q5_K", "Q6_K", "Q8_K", "IQ2_XXS", "IQ2_XS", "IQ3_XXS", "IQ1_S", "IQ4_NL", "IQ3_S",
+        "IQ2_S", "IQ4_XS", "I8", "I16", "I32", "I64", "F64", "IQ1_M", "BF16",
     ];
-    NAMES.get(id as usize).map_or_else(|| format!("type{id}"), |s| s.to_string())
+    NAMES
+        .get(id as usize)
+        .map_or_else(|| format!("type{id}"), |s| s.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -173,7 +176,13 @@ impl TensorInfo {
         self.dims.iter().product()
     }
     pub fn bytes(&self) -> usize {
-        let ty = self.ty().unwrap_or_else(|| panic!("tensor {} has unsupported type {}", self.name, ggml_type_name(self.type_id)));
+        let ty = self.ty().unwrap_or_else(|| {
+            panic!(
+                "tensor {} has unsupported type {}",
+                self.name,
+                ggml_type_name(self.type_id)
+            )
+        });
         ty.row_bytes(self.dims[0]) * self.dims[1..].iter().product::<usize>()
     }
 }
@@ -196,7 +205,10 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
         if self.pos + n > self.b.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated GGUF header"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated GGUF header",
+            ));
         }
         let s = &self.b[self.pos..self.pos + n];
         self.pos += n;
@@ -235,7 +247,12 @@ impl<'a> Cursor<'a> {
             10 => Value::U64(self.u64()?),
             11 => Value::I64(self.u64()? as i64),
             12 => Value::F64(f64::from_bits(self.u64()?)),
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown GGUF value type {ty}"))),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown GGUF value type {ty}"),
+                ))
+            }
         })
     }
 }
@@ -246,11 +263,17 @@ impl Gguf {
         let map = unsafe { Mmap::map(&file)? };
         let mut c = Cursor { b: &map, pos: 0 };
         if c.take(4)? != b"GGUF" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a GGUF file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a GGUF file",
+            ));
         }
         let version = c.u32()?;
         if version != 3 && version != 2 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("unsupported GGUF version {version}")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported GGUF version {version}"),
+            ));
         }
         let n_tensors = c.u64()? as usize;
         let n_kv = c.u64()? as usize;
@@ -270,22 +293,71 @@ impl Gguf {
             }
             let type_id = c.u32()?;
             let offset = c.u64()? as usize;
-            tensors.push(TensorInfo { name, dims, type_id, offset });
+            tensors.push(TensorInfo {
+                name,
+                dims,
+                type_id,
+                offset,
+            });
         }
-        let index = kv.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect();
-        let tindex = tensors.iter().enumerate().map(|(i, t)| (t.name.clone(), i)).collect();
-        let alignment = kv.iter().find(|(k, _)| k == "general.alignment").and_then(|(_, v)| v.as_u64()).unwrap_or(32) as usize;
+        let index = kv
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (k.clone(), i))
+            .collect();
+        let tindex = tensors
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.clone(), i))
+            .collect();
+        let alignment = kv
+            .iter()
+            .find(|(k, _)| k == "general.alignment")
+            .and_then(|(_, v)| v.as_u64())
+            .unwrap_or(32) as usize;
         let data_start = c.pos.div_ceil(alignment) * alignment;
         for t in &tensors {
             let bytes = match t.ty() {
-                Some(ty) if !t.dims.is_empty() && t.dims[0].is_multiple_of(32) || matches!(t.ty(), Some(GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)) => ty.row_bytes(t.dims[0]) * t.dims[1..].iter().product::<usize>(),
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("tensor {} has unsupported type {} or shape {:?}", t.name, ggml_type_name(t.type_id), t.dims))),
+                Some(ty)
+                    if !t.dims.is_empty() && t.dims[0].is_multiple_of(32)
+                        || matches!(
+                            t.ty(),
+                            Some(GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
+                        ) =>
+                {
+                    ty.row_bytes(t.dims[0]) * t.dims[1..].iter().product::<usize>()
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "tensor {} has unsupported type {} or shape {:?}",
+                            t.name,
+                            ggml_type_name(t.type_id),
+                            t.dims
+                        ),
+                    ))
+                }
             };
             if t.dims.len() > 2 || data_start + t.offset + bytes > map.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("tensor {} ({:?} at {}) does not fit the file", t.name, t.dims, t.offset)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "tensor {} ({:?} at {}) does not fit the file",
+                        t.name, t.dims, t.offset
+                    ),
+                ));
             }
         }
-        Ok(Gguf { map, kv, index, tensors, tindex, data_start, alignment })
+        Ok(Gguf {
+            map,
+            kv,
+            index,
+            tensors,
+            tindex,
+            data_start,
+            alignment,
+        })
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -321,7 +393,12 @@ impl Gguf {
 }
 
 /// Serializes a GGUF header (metadata + tensor table) for `tensors` laid out at their stated offsets.
-pub fn write_header(out: &mut Vec<u8>, kv: &[(String, Value)], tensors: &[TensorInfo], alignment: usize) {
+pub fn write_header(
+    out: &mut Vec<u8>,
+    kv: &[(String, Value)],
+    tensors: &[TensorInfo],
+    alignment: usize,
+) {
     fn string(out: &mut Vec<u8>, s: &str) {
         out.extend_from_slice(&(s.len() as u64).to_le_bytes());
         out.extend_from_slice(s.as_bytes());
@@ -375,7 +452,8 @@ pub fn write_header(out: &mut Vec<u8>, kv: &[(String, Value)], tensors: &[Tensor
 
 impl Gguf {
     fn header_with(&self, key: &str, value: Value) -> Vec<u8> {
-        let mut kv: Vec<(String, Value)> = self.kv.iter().filter(|(k, _)| k != key).cloned().collect();
+        let mut kv: Vec<(String, Value)> =
+            self.kv.iter().filter(|(k, _)| k != key).cloned().collect();
         kv.push((key.to_string(), value));
         let mut header = Vec::new();
         write_header(&mut header, &kv, &self.tensors, self.alignment);

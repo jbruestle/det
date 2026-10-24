@@ -19,7 +19,8 @@ fn find(pattern: &str) -> Option<PathBuf> {
 
 #[test]
 fn matches_hf_tokenizer() {
-    let gguf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/Qwen3.5-4B-det-w6.gguf");
+    let gguf =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/Qwen3.5-4B-det-w6.gguf");
     let hf = find(".cache/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/*/tokenizer.json");
     let (Some(hf), true) = (hf, gguf.exists()) else {
         eprintln!("skipped: model or HF tokenizer not present");
@@ -42,6 +43,10 @@ fn matches_hf_tokenizer() {
         let a = ours.encode(t, false).unwrap().get_ids().to_vec();
         let b = theirs.encode(t, false).unwrap().get_ids().to_vec();
         assert_eq!(a, b, "tokenization differs for {t:?}");
-        assert_eq!(ours.decode(&a, false).unwrap(), t, "decode roundtrip for {t:?}");
+        assert_eq!(
+            ours.decode(&a, false).unwrap(),
+            t,
+            "decode roundtrip for {t:?}"
+        );
     }
 }

@@ -72,7 +72,10 @@ unsafe fn pass(c: &Cols, scale: __m256, add: &[__m256; 4], f: &[f32], update: bo
                 let i = i8 * 8 + r;
                 let ptr = c.s.add(i * c.dv + 8 * j);
                 let s = if update {
-                    _mm256_add_ps(_mm256_loadu_ps(ptr), _mm256_mul_ps(_mm256_set1_ps(c.k[i]), add[j]))
+                    _mm256_add_ps(
+                        _mm256_loadu_ps(ptr),
+                        _mm256_mul_ps(_mm256_set1_ps(c.k[i]), add[j]),
+                    )
                 } else {
                     _mm256_mul_ps(_mm256_loadu_ps(ptr), scale)
                 };
@@ -95,7 +98,10 @@ unsafe fn step(c: &Cols) {
     let beta = _mm256_set1_ps(c.beta);
     let mut delta = [_mm256_setzero_ps(); 4];
     for j in 0..4 {
-        delta[j] = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(c.v.as_ptr().add(8 * j)), kv[j]), beta);
+        delta[j] = _mm256_mul_ps(
+            _mm256_sub_ps(_mm256_loadu_ps(c.v.as_ptr().add(8 * j)), kv[j]),
+            beta,
+        );
     }
     let o = pass(c, _mm256_setzero_ps(), &delta, c.q, true);
     for j in 0..4 {
@@ -103,7 +109,18 @@ unsafe fn step(c: &Cols) {
     }
 }
 
-pub fn gdn(scratch: &mut Vec<f32>, l: &GdnLayer, st: &GdnState, s: &GdnShape, qkv: &Buf<f32>, z: &Buf<f32>, a: &Buf<f32>, b: &Buf<f32>, on: &Buf<f32>, ex: GdnExport) {
+pub fn gdn(
+    scratch: &mut Vec<f32>,
+    l: &GdnLayer,
+    st: &GdnState,
+    s: &GdnShape,
+    qkv: &Buf<f32>,
+    z: &Buf<f32>,
+    a: &Buf<f32>,
+    b: &Buf<f32>,
+    on: &Buf<f32>,
+    ex: GdnExport,
+) {
     let (n_k, n_v, dk, dv, m) = (s.n_k, s.n_v, s.dk, s.dv, s.m);
     assert!(dk.is_power_of_two() && dk <= 1 << 15 && dv.is_multiple_of(COLS));
     let conv_dim = 2 * n_k * dk + n_v * dv;
@@ -144,12 +161,31 @@ pub fn gdn(scratch: &mut Vec<f32>, l: &GdnLayer, st: &GdnState, s: &GdnShape, qk
         .enumerate()
         .for_each(|(t, ((((yt, qt), kt), bt), dt))| {
             let t = t as isize;
-            unsafe { conv_silu([row(t - 3), row(t - 2), row(t - 1), row(t)], &taps, conv_dim, yt) };
+            unsafe {
+                conv_silu(
+                    [row(t - 3), row(t - 2), row(t - 1), row(t)],
+                    &taps,
+                    conv_dim,
+                    yt,
+                )
+            };
             let mut tmp = Vec::new();
             for h in 0..n_k {
                 unsafe {
-                    l2norm_row(&yt[h * dk..(h + 1) * dk], s.eps, spec::QSCALE_GDN, &mut qt[h * dk..(h + 1) * dk], &mut tmp);
-                    l2norm_row(&yt[kd + h * dk..kd + (h + 1) * dk], s.eps, 1.0, &mut kt[h * dk..(h + 1) * dk], &mut tmp);
+                    l2norm_row(
+                        &yt[h * dk..(h + 1) * dk],
+                        s.eps,
+                        spec::QSCALE_GDN,
+                        &mut qt[h * dk..(h + 1) * dk],
+                        &mut tmp,
+                    );
+                    l2norm_row(
+                        &yt[kd + h * dk..kd + (h + 1) * dk],
+                        s.eps,
+                        1.0,
+                        &mut kt[h * dk..(h + 1) * dk],
+                        &mut tmp,
+                    );
                 }
             }
             let t = t as usize;
@@ -164,15 +200,22 @@ pub fn gdn(scratch: &mut Vec<f32>, l: &GdnLayer, st: &GdnState, s: &GdnShape, qk
     conv_state[(3 - m.min(3)) * conv_dim..].copy_from_slice(&qkv[(m - m.min(3)) * conv_dim..]);
     if let Some(gin) = ex.gin {
         for t in 0..m {
-            let (qt, kt, vt) = (&q[t * kd..(t + 1) * kd], &k[t * kd..(t + 1) * kd], &y[t * conv_dim + 2 * kd..(t + 1) * conv_dim]);
+            let (qt, kt, vt) = (
+                &q[t * kd..(t + 1) * kd],
+                &k[t * kd..(t + 1) * kd],
+                &y[t * conv_dim + 2 * kd..(t + 1) * conv_dim],
+            );
             let g = &mut gin.host_mut()[t * n_k * gw..(t + 1) * n_k * gw];
             for kh in 0..n_k {
                 let r = &mut g[kh * gw..(kh + 1) * gw];
                 r[..dk].copy_from_slice(&qt[kh * dk..(kh + 1) * dk]);
                 r[dk..2 * dk].copy_from_slice(&kt[kh * dk..(kh + 1) * dk]);
-                r[2 * dk..2 * dk + rep * dv].copy_from_slice(&vt[kh * rep * dv..(kh + 1) * rep * dv]);
-                r[2 * dk + rep * dv..2 * dk + rep * dv + rep].copy_from_slice(&beta[t * n_v + kh * rep..t * n_v + (kh + 1) * rep]);
-                r[2 * dk + rep * dv + rep..].copy_from_slice(&decay[t * n_v + kh * rep..t * n_v + (kh + 1) * rep]);
+                r[2 * dk..2 * dk + rep * dv]
+                    .copy_from_slice(&vt[kh * rep * dv..(kh + 1) * rep * dv]);
+                r[2 * dk + rep * dv..2 * dk + rep * dv + rep]
+                    .copy_from_slice(&beta[t * n_v + kh * rep..t * n_v + (kh + 1) * rep]);
+                r[2 * dk + rep * dv + rep..]
+                    .copy_from_slice(&decay[t * n_v + kh * rep..t * n_v + (kh + 1) * rep]);
             }
         }
     }
@@ -193,7 +236,8 @@ pub fn gdn(scratch: &mut Vec<f32>, l: &GdnLayer, st: &GdnState, s: &GdnShape, qk
                 dk,
                 q: &q[t * kd + kh * dk..t * kd + (kh + 1) * dk],
                 k: &k[t * kd + kh * dk..t * kd + (kh + 1) * dk],
-                v: &y[t * conv_dim + 2 * kd + h * dv + j0..t * conv_dim + 2 * kd + h * dv + j0 + COLS],
+                v: &y[t * conv_dim + 2 * kd + h * dv + j0
+                    ..t * conv_dim + 2 * kd + h * dv + j0 + COLS],
                 beta: beta[t * n_v + h],
                 decay: decay[t * n_v + h],
                 o: unsafe { (gp as *mut f32).add((t * n_v + h) * dv + j0) },
@@ -202,7 +246,17 @@ pub fn gdn(scratch: &mut Vec<f32>, l: &GdnLayer, st: &GdnState, s: &GdnShape, qk
         }
     });
     let norm = &l.norm.host()[..dv];
-    on.host_mut()[..m * n_v * dv].par_chunks_mut(dv).enumerate().for_each(|(i, dst)| unsafe {
-        rmsnorm_silu_row(&gout[i * dv..(i + 1) * dv], norm, s.eps, &z.host()[i * dv..(i + 1) * dv], dst, &mut Vec::new());
-    });
+    on.host_mut()[..m * n_v * dv]
+        .par_chunks_mut(dv)
+        .enumerate()
+        .for_each(|(i, dst)| unsafe {
+            rmsnorm_silu_row(
+                &gout[i * dv..(i + 1) * dv],
+                norm,
+                s.eps,
+                &z.host()[i * dv..(i + 1) * dv],
+                dst,
+                &mut Vec::new(),
+            );
+        });
 }

@@ -52,7 +52,10 @@ impl Ctx<'_> {
         let mut v: Vec<T> = vec![unsafe { std::mem::zeroed() }; n];
         let bytes = n * std::mem::size_of::<T>();
         let out = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, bytes) };
-        unsafe { self.reader.read_bytes(b.ptr_at(offset) as *const u8, bytes, out) };
+        unsafe {
+            self.reader
+                .read_bytes(b.ptr_at(offset) as *const u8, bytes, out)
+        };
         v
     }
 }

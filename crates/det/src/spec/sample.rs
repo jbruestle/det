@@ -23,7 +23,13 @@ pub fn weights(logits: &[f32], inv_temp: f32, w: &mut [u64]) {
 }
 
 /// One sampling draw. Returns (token index, next rng state).
-pub fn sample(logits: &[f32], inv_temp: f32, top_k: usize, top_p: f32, rng_state: u64) -> (usize, u64) {
+pub fn sample(
+    logits: &[f32],
+    inv_temp: f32,
+    top_k: usize,
+    top_p: f32,
+    rng_state: u64,
+) -> (usize, u64) {
     let (state, z) = splitmix64(rng_state);
     (sample_with_draw(logits, inv_temp, top_k, top_p, z), state)
 }

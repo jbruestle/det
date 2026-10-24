@@ -4,7 +4,13 @@ use det::{Backend, Buf, Model, Sampling};
 use std::path::Path;
 use std::time::Instant;
 
-const DEFAULT_BACKEND: &str = if cfg!(target_os = "linux") { "cuda" } else if cfg!(target_os = "macos") { "metal" } else { "cpu" };
+const DEFAULT_BACKEND: &str = if cfg!(target_os = "linux") {
+    "cuda"
+} else if cfg!(target_os = "macos") {
+    "metal"
+} else {
+    "cpu"
+};
 
 fn usage() -> ! {
     eprintln!(
@@ -57,7 +63,11 @@ impl Args {
         while i < argv.len() {
             if let Some(name) = argv[i].strip_prefix("--") {
                 let takes = !matches!(name, "chat" | "think" | "dump" | "gemm" | "no-calibrate");
-                let val = if takes { argv.get(i + 1).cloned() } else { None };
+                let val = if takes {
+                    argv.get(i + 1).cloned()
+                } else {
+                    None
+                };
                 if takes {
                     i += 1;
                 }
@@ -70,22 +80,43 @@ impl Args {
         Args { pos, opts }
     }
     fn opt(&self, name: &str) -> Option<&str> {
-        self.opts.iter().rev().find(|(n, _)| n == name).and_then(|(_, v)| v.as_deref())
+        self.opts
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.as_deref())
     }
     fn flag(&self, name: &str) -> bool {
         self.opts.iter().any(|(n, _)| n == name)
     }
     fn num<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
-        self.opt(name).map(|v| v.parse().unwrap_or_else(|_| panic!("--{name}: bad value {v}"))).unwrap_or(default)
+        self.opt(name)
+            .map(|v| {
+                v.parse()
+                    .unwrap_or_else(|_| panic!("--{name}: bad value {v}"))
+            })
+            .unwrap_or(default)
     }
 }
 
 fn show(v: &Value) -> String {
     match v {
-        Value::Str(s) => format!("{:?}", if s.len() > 80 { format!("{}…", &s[..80]) } else { s.clone() }),
+        Value::Str(s) => format!(
+            "{:?}",
+            if s.len() > 80 {
+                format!("{}…", &s[..80])
+            } else {
+                s.clone()
+            }
+        ),
         Value::Array(a) => {
             let head: Vec<String> = a.iter().take(8).map(show).collect();
-            format!("[{}{}] ({} items)", head.join(", "), if a.len() > 8 { ", …" } else { "" }, a.len())
+            format!(
+                "[{}{}] ({} items)",
+                head.join(", "),
+                if a.len() > 8 { ", …" } else { "" },
+                a.len()
+            )
         }
         other => format!("{other:?}"),
     }
@@ -96,9 +127,20 @@ fn info(path: &Path) {
     for (k, v) in &g.kv {
         println!("{k} = {}", show(v));
     }
-    println!("data_start {} alignment {} tensors {}", g.data_start, g.alignment, g.tensors.len());
+    println!(
+        "data_start {} alignment {} tensors {}",
+        g.data_start,
+        g.alignment,
+        g.tensors.len()
+    );
     for t in &g.tensors {
-        println!("{:40} {:?} {} @{}", t.name, t.dims, ggml_type_name(t.type_id), t.offset);
+        println!(
+            "{:40} {:?} {} @{}",
+            t.name,
+            t.dims,
+            ggml_type_name(t.type_id),
+            t.offset
+        );
     }
 }
 
@@ -127,8 +169,14 @@ fn tensor(path: &Path, name: &str, n: usize) {
 
 fn tokens(path: &Path, from: usize, to: usize) {
     let g = Gguf::open(path).expect("open gguf");
-    let toks = g.get("tokenizer.ggml.tokens").and_then(Value::as_array).expect("tokens");
-    let types = g.get("tokenizer.ggml.token_type").and_then(Value::as_array).expect("token types");
+    let toks = g
+        .get("tokenizer.ggml.tokens")
+        .and_then(Value::as_array)
+        .expect("tokens");
+    let types = g
+        .get("tokenizer.ggml.token_type")
+        .and_then(Value::as_array)
+        .expect("token types");
     for i in from..to.min(toks.len()) {
         println!("{i} {:?} type {:?}", toks[i].as_str().unwrap(), types[i]);
     }
@@ -146,39 +194,77 @@ fn generate<B: Backend>(a: &Args, path: &Path, backend: B) {
     let mut m = load(a, path, backend);
     let tk = det::tokenizer::from_gguf(&m.gguf).unwrap_or_else(|e| panic!("tokenizer: {e}"));
     let ids: Vec<i32> = match (a.opt("ids").map(text_arg), a.opt("prompt").map(text_arg)) {
-        (Some(s), _) => s.trim().split(',').map(|v| v.parse().expect("token id")).collect(),
+        (Some(s), _) => s
+            .trim()
+            .split(',')
+            .map(|v| v.parse().expect("token id"))
+            .collect(),
         (None, Some(p)) => {
-            let text = if a.flag("chat") { det::tokenizer::chat_prompt(&m.gguf, &p, a.flag("think")).unwrap_or_else(|e| panic!("chat template: {e}")) } else { p };
-            tk.tokenizer.encode(text, false).expect("encode").get_ids().iter().map(|&v| v as i32).collect()
+            let text = if a.flag("chat") {
+                det::tokenizer::chat_prompt(&m.gguf, &p, a.flag("think"))
+                    .unwrap_or_else(|e| panic!("chat template: {e}"))
+            } else {
+                p
+            };
+            tk.tokenizer
+                .encode(text, false)
+                .expect("encode")
+                .get_ids()
+                .iter()
+                .map(|&v| v as i32)
+                .collect()
         }
         _ => usage(),
     };
     eprintln!("prompt: {} ids {:?}", ids.len(), &ids[..ids.len().min(32)]);
     let temp: f32 = a.num("temp", 0.0);
-    let sampling = Sampling { inv_temp: (temp > 0.0).then(|| 1.0 / temp), top_k: a.num("top-k", 0), top_p: a.num("top-p", 1.0), rng: a.num("seed", 0u64) };
+    let sampling = Sampling {
+        inv_temp: (temp > 0.0).then(|| 1.0 / temp),
+        top_k: a.num("top-k", 0),
+        top_p: a.num("top-p", 1.0),
+        rng: a.num("seed", 0u64),
+    };
     let stop: Vec<i32> = tk.eos.iter().map(|&v| v as i32).collect();
     let n_new: usize = a.num("n", 64);
     let t0 = Instant::now();
     if a.flag("dump") {
         let c = &m.cfg;
-        let mut d = Dump { hidden: c.hidden, mixer_w: c.gdn_v_heads * c.gdn_dv };
-        m.prefill(&ids, Some(&mut d)).unwrap_or_else(|e| panic!("{e}"));
+        let mut d = Dump {
+            hidden: c.hidden,
+            mixer_w: c.gdn_v_heads * c.gdn_dv,
+        };
+        m.prefill(&ids, Some(&mut d))
+            .unwrap_or_else(|e| panic!("{e}"));
     } else {
-        m.prefill::<NoObs>(&ids, None).unwrap_or_else(|e| panic!("{e}"));
+        m.prefill::<NoObs>(&ids, None)
+            .unwrap_or_else(|e| panic!("{e}"));
     }
     let tp = t0.elapsed().as_secs_f64();
     let t0 = Instant::now();
     let mut text = String::new();
-    let out = m.generate::<NoObs>(&[], n_new, sampling, &stop, None, |id| {
-        let piece = tk.tokenizer.decode(&[id as u32], false).unwrap_or_default();
-        eprint!("{piece}");
-        text.push_str(&piece);
-    })
-    .unwrap_or_else(|e| panic!("{e}"));
+    let out = m
+        .generate::<NoObs>(&[], n_new, sampling, &stop, None, |id| {
+            let piece = tk.tokenizer.decode(&[id as u32], false).unwrap_or_default();
+            eprint!("{piece}");
+            text.push_str(&piece);
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
     eprintln!();
     let td = t0.elapsed().as_secs_f64();
-    eprintln!("prefill {} tok in {tp:.3}s = {:.1} tok/s; decode {} tok in {td:.3}s = {:.2} tok/s", ids.len(), ids.len() as f64 / tp, out.len(), out.len() as f64 / td);
-    println!("{}", out.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+    eprintln!(
+        "prefill {} tok in {tp:.3}s = {:.1} tok/s; decode {} tok in {td:.3}s = {:.2} tok/s",
+        ids.len(),
+        ids.len() as f64 / tp,
+        out.len(),
+        out.len() as f64 / td
+    );
+    println!(
+        "{}",
+        out.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     if let Some(p) = a.opt("logits") {
         let bytes: Vec<u8> = m.logits().iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(p, bytes).unwrap();
@@ -196,7 +282,12 @@ fn conformance<B: Backend>(backend: B, prim: Option<det::conformance::Prim>) -> 
         }
     }
     let failed = r.failures().count();
-    println!("{}: {} checks, {failed} failed ({:.1}s)", backend.name(), r.checks.len(), t0.elapsed().as_secs_f64());
+    println!(
+        "{}: {} checks, {failed} failed ({:.1}s)",
+        backend.name(),
+        r.checks.len(),
+        t0.elapsed().as_secs_f64()
+    );
     std::process::exit(if failed == 0 { 0 } else { 1 })
 }
 
@@ -205,7 +296,11 @@ fn load<B: Backend>(a: &Args, path: &Path, backend: B) -> Model<B> {
     let ctx: usize = a.num("ctx", 8192);
     let batch: usize = a.num("batch", 256);
     let m = Model::load(path, backend, ctx, batch).unwrap_or_else(|e| panic!("{e}"));
-    eprintln!("{}: loaded in {:.1}s", m.backend.name(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "{}: loaded in {:.1}s",
+        m.backend.name(),
+        t0.elapsed().as_secs_f64()
+    );
     m
 }
 
@@ -224,13 +319,21 @@ fn calibrate<B: Backend>(a: &Args, path: &Path, backend: B) {
         }
         None => {
             if det::calibrate::write_in_place(&m, &scales, path).expect("write gguf") {
-                eprintln!("wrote {} value scales into {}", scales.len(), path.display());
+                eprintln!(
+                    "wrote {} value scales into {}",
+                    scales.len(),
+                    path.display()
+                );
             } else {
                 let tmp = path.with_extension("gguf.tmp");
                 det::calibrate::write_copy(&m, &scales, &tmp).expect("write gguf");
                 drop(m);
                 std::fs::rename(&tmp, path).expect("rename");
-                eprintln!("rewrote {} with {} value scales", path.display(), scales.len());
+                eprintln!(
+                    "rewrote {} with {} value scales",
+                    path.display(),
+                    scales.len()
+                );
             }
         }
     }
@@ -245,7 +348,9 @@ fn bench_gemm<B: Backend>(m: &Model<B>) {
             return;
         }
         let l = &p.lins[0];
-        seen.push((name, B::linear_widths(l).iter().sum(), unsafe { &*(l as *const B::Linear) }));
+        seen.push((name, B::linear_widths(l).iter().sum(), unsafe {
+            &*(l as *const B::Linear)
+        }));
     };
     let l0 = &m.layers[0];
     push("gate|up", &l0.gu);
@@ -284,7 +389,12 @@ fn bench_gemm<B: Backend>(m: &Model<B>) {
                 if mm > m.max_batch {
                     continue;
                 }
-                let (xq, sx, mx, y): (Buf<i8>, Buf<f32>, Buf<u16>, Buf<f32>) = (bk.alloc(mm * k), bk.alloc(mm), bk.alloc(mm * k / 128), bk.alloc(mm * n));
+                let (xq, sx, mx, y): (Buf<i8>, Buf<f32>, Buf<u16>, Buf<f32>) = (
+                    bk.alloc(mm * k),
+                    bk.alloc(mm),
+                    bk.alloc(mm * k / 128),
+                    bk.alloc(mm * n),
+                );
                 bk.write(&sx, 0, &vec![1.0f32; mm]);
                 bk.write(&mx, 0, &vec![1u16; mm * k / 128]);
                 let reps = if mm == 1 { 200 } else { 20 };
@@ -300,7 +410,12 @@ fn bench_gemm<B: Backend>(m: &Model<B>) {
                 let dt = t0.elapsed().as_secs_f64() / reps as f64;
                 let bytes = (n * k) as f64 * bpw;
                 if pass == 1 {
-                    println!("{name:8} N={n:6} K={k:5} M={mm:3}: {:7.3} ms  {:6.0} GB/s  {:5.1} TOPS", dt * 1e3, bytes / dt / 1e9, 2.0 * (n * k * mm) as f64 / dt / 1e12);
+                    println!(
+                        "{name:8} N={n:6} K={k:5} M={mm:3}: {:7.3} ms  {:6.0} GB/s  {:5.1} TOPS",
+                        dt * 1e3,
+                        bytes / dt / 1e9,
+                        2.0 * (n * k * mm) as f64 / dt / 1e12
+                    );
                 }
             }
         }
@@ -330,7 +445,12 @@ fn bench<B: Backend>(a: &Args, path: &Path, backend: B) {
     }
     m.backend.sync();
     let td = t0.elapsed().as_secs_f64();
-    println!("pp{pp}: {:.1} tok/s ({tp:.3}s)   tg{tg}: {:.2} tok/s ({:.1} ms/tok)", pp as f64 / tp, tg as f64 / td, td * 1000.0 / tg as f64);
+    println!(
+        "pp{pp}: {:.1} tok/s ({tp:.3}s)   tg{tg}: {:.2} tok/s ({:.1} ms/tok)",
+        pp as f64 / tp,
+        tg as f64 / td,
+        td * 1000.0 / tg as f64
+    );
 }
 
 /// Perplexity over `text` with the llama-perplexity protocol: chunks of `ctx` tokens, the second half
@@ -339,7 +459,14 @@ fn ppl<B: Backend>(a: &Args, path: &Path, text_path: &Path, backend: B) {
     let text = std::fs::read_to_string(text_path).expect("read text");
     let mut m = load(a, path, backend);
     let tk = det::tokenizer::from_gguf(&m.gguf).unwrap_or_else(|e| panic!("tokenizer: {e}"));
-    let ids: Vec<i32> = tk.tokenizer.encode(text, false).expect("encode").get_ids().iter().map(|&v| v as i32).collect();
+    let ids: Vec<i32> = tk
+        .tokenizer
+        .encode(text, false)
+        .expect("encode")
+        .get_ids()
+        .iter()
+        .map(|&v| v as i32)
+        .collect();
     let ctx: usize = a.num("ctx", 2048);
     let n_chunks: usize = a.num("chunks", usize::MAX).min(ids.len() / ctx);
     eprintln!("{} tokens, {n_chunks} chunks of {ctx}", ids.len());
@@ -370,9 +497,16 @@ fn ppl<B: Backend>(a: &Args, path: &Path, text_path: &Path, backend: B) {
             }
             pos += batch.len();
         }
-        eprintln!("chunk {c}: ppl so far {:.4} ({count} tokens, {:.1}s)", (nll / count as f64).exp(), t0.elapsed().as_secs_f64());
+        eprintln!(
+            "chunk {c}: ppl so far {:.4} ({count} tokens, {:.1}s)",
+            (nll / count as f64).exp(),
+            t0.elapsed().as_secs_f64()
+        );
     }
-    println!("perplexity {:.4} over {count} tokens", (nll / count as f64).exp());
+    println!(
+        "perplexity {:.4} over {count} tokens",
+        (nll / count as f64).exp()
+    );
 }
 
 fn main() {

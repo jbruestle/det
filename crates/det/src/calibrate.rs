@@ -46,7 +46,13 @@ La Révolution française a profondément transformé la société et la politiq
 SELECT name, COUNT(*) FROM orders WHERE total > 100 GROUP BY name ORDER BY 2 DESC;\n\
 Water boils at 100 degrees Celsius at sea level, but at higher altitudes the boiling point drops because the air pressure is lower. \
 <|im_start|>user\nWrite a haiku about autumn.<|im_end|>\n<|im_start|>assistant\nCrisp leaves drift and fall,\nGolden light on quiet paths,\nThe year exhales slow.<|im_end|>\n";
-    let mut ids: Vec<i32> = tk.encode(TEXT, false).expect("encode").get_ids().iter().map(|&v| v as i32).collect();
+    let mut ids: Vec<i32> = tk
+        .encode(TEXT, false)
+        .expect("encode")
+        .get_ids()
+        .iter()
+        .map(|&v| v as i32)
+        .collect();
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     for _ in 0..n_random {
         let (next, z) = crate::spec::splitmix64(state);
@@ -58,16 +64,37 @@ Water boils at 100 degrees Celsius at sea level, but at higher altitudes the boi
 
 /// Runs the calibration input through `m` and returns the per-(attention layer, kv head) value scales.
 pub fn v_scales<B: Backend>(m: &mut Model<B>, ids: &[i32]) -> Result<Vec<f32>, String> {
-    let layers: Vec<usize> = (0..m.cfg.layers.len()).filter(|&l| m.cfg.is_attention(l)).collect();
-    let mut obs = AbsMax { n_kv: m.cfg.n_kv, hd: m.cfg.head_dim, absmax: vec![0.0; layers.len() * m.cfg.n_kv], layers };
+    let layers: Vec<usize> = (0..m.cfg.layers.len())
+        .filter(|&l| m.cfg.is_attention(l))
+        .collect();
+    let mut obs = AbsMax {
+        n_kv: m.cfg.n_kv,
+        hd: m.cfg.head_dim,
+        absmax: vec![0.0; layers.len() * m.cfg.n_kv],
+        layers,
+    };
     m.reset();
     m.prefill(ids, Some(&mut obs))?;
-    Ok(obs.absmax.iter().map(|&a| if a == 0.0 { crate::model::DEFAULT_V_SCALE } else { a * HEADROOM / 32767.0 }).collect())
+    Ok(obs
+        .absmax
+        .iter()
+        .map(|&a| {
+            if a == 0.0 {
+                crate::model::DEFAULT_V_SCALE
+            } else {
+                a * HEADROOM / 32767.0
+            }
+        })
+        .collect())
 }
 
 /// Writes `scales` into the metadata of the model's file in place (converted files reserve the room);
 /// returns false when the header has no room, in which case `write_copy` is the way.
-pub fn write_in_place<B: Backend>(m: &Model<B>, scales: &[f32], path: &Path) -> std::io::Result<bool> {
+pub fn write_in_place<B: Backend>(
+    m: &Model<B>,
+    scales: &[f32],
+    path: &Path,
+) -> std::io::Result<bool> {
     let value = Value::Array(scales.iter().map(|&s| Value::F32(s)).collect());
     m.gguf.set_metadata_in_place(path, V_SCALE_KEY, value)
 }

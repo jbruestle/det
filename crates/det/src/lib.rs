@@ -6,10 +6,10 @@ pub mod config;
 pub mod conformance;
 pub mod convert;
 pub mod cpu;
-pub mod gguf;
-pub mod hooks;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+pub mod gguf;
+pub mod hooks;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub mod metal;
 pub mod model;
