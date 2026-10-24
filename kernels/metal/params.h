@@ -5,6 +5,10 @@
 #ifndef __METAL_VERSION__
 #include <stdint.h>
 #endif
+// GDN recurrence tile: DET_GDN_JB columns of a head per threadgroup, DET_GDN_P lanes per column (16: 8 state registers
+// per lane, 2x faster than 4 on the M5 Max)
+#define DET_GDN_JB 32
+#define DET_GDN_P 16
 typedef struct { uint64_t x, w, y, xq, sx, mx; float eps; int n; } det_p_norm;
 typedef struct { uint64_t a, b, h, q, sx, mx; int n; } det_p_gquant;
 typedef struct { uint64_t tab, ids, x; int H; } det_p_embed;

@@ -11,7 +11,7 @@
 // Keys are split across blocks only when M <= MSPLIT (then the scratch holds the int64 partials).
 // det_attention_dev (graph-capturable decode): the same CUDA-core kernels, but pos0 is read from device memory
 // (pos0_dev) and the grid is sized for max_pos; blocks whose key range lies beyond the real pos0 exit at once.
-// For M >= tc_min_m() (default 16) the max/accumulate passes instead run on tensor cores (namespace tc below): same
+// For M >= TC_MIN_M the max/accumulate passes instead run on tensor cores (namespace tc below): same
 // numerics, with the integer contractions done by int8 mma.sync (scores) and byte-sliced u8/s8 mma.sync (P.V).
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +23,7 @@ using namespace det;
 
 namespace {
 
-#ifndef DET_ATTN_TK
-#define DET_ATTN_TK 32
-#endif
-constexpr int TK = DET_ATTN_TK;            // keys per tile
+constexpr int TK = 32;                     // keys per tile
 constexpr int NT = 4 * TK;                 // threads per attention block (4 thread groups over heads)
 constexpr int MSPLIT = 256;                // key splitting (int64 scratch) only for M <= MSPLIT
 constexpr int SPLIT_TARGET_BLOCKS = 512;   // aim for this many blocks when splitting keys
@@ -43,7 +40,9 @@ struct Scratch {
 };
 constexpr int TC_RB = 48;                  // rows per tensor-core block (tc::RB)
 constexpr int TC_SLOTS_MAX = 256;          // tail slots (>= the number of tail blocks, which is < the SM count)
-constexpr int TC_SCRATCH_MIN_M = 16;       // tail slots are reserved in the scratch from this M on (= default tc_min_m)
+constexpr int TC_MIN_M = 16;               // tokens from which the tensor-core path runs: measured on the RTX 5090 it is never
+                                           // slower than the CUDA-core path from 16 on (equal at pos0 = 0, 2-8x faster at depth)
+constexpr int TC_SCRATCH_MIN_M = TC_MIN_M; // tail slots are reserved in the scratch from this M on
 static size_t align_up(size_t x) { return (x + 255) & ~(size_t)255; }
 static Scratch layout(void* base, int M, int n_h, int hd) {
     char* b = (char*)base;
@@ -388,7 +387,7 @@ __global__ void k_attn_fin(const unsigned long long* __restrict__ num, const uns
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Tensor-core prefill path (used when M >= tc_min_m(), default 16; env DET_ATTN_TC=0 disables, =N sets the threshold).
+// Tensor-core prefill path (M >= TC_MIN_M).
 // Same numerics as the CUDA-core path above, same two passes; only the integer contractions move to mma.sync:
 //   * scores:  s8 x s8 -> s32 m16n8k32 over hd (exact, |dot| < 2^23), then s = ((float)dot * sq) * sk as before.
 //   * P.V:     pq (24 bits + the pq == 2^24 bit) and vq (int16) are byte-sliced: pq = p0 + p1<<8 + p2<<16 + p3<<24,
@@ -852,16 +851,6 @@ static void run(const det_attn_layer* L, const det_kv_cache* kv, const float* qg
 }
 } // namespace tc
 
-// threshold for the tensor-core path: env DET_ATTN_TC = "0" disables it, "N" uses it for M >= N.  Default 16: measured
-// on the RTX 5090 the tensor-core path is never slower than the CUDA-core path for M >= 16 (equal at pos0 = 0, 2-8x
-// faster at any nonzero context); decode / short chunks keep the CUDA-core path with its key splitting.
-static int tc_min_m() {
-    const char* e = getenv("DET_ATTN_TC");
-    if (!e || !*e) return 16;
-    const int v = atoi(e);
-    return v <= 0 ? 0x7fffffff : v;
-}
-
 // pos0_dev == nullptr: pos0 is the position (det_attention).  Otherwise the kernels read pos0 from *pos0_dev and the
 // launch is sized for pos0 <= max_pos (det_attention_dev; CUDA-core path only).
 template <int HD, int REP>
@@ -872,7 +861,7 @@ static void run_attention(const det_attn_layer* L, const det_kv_cache* kv, const
     const int rows = M * n_h + 2 * M * n_kv;
     k_attn_prep<HD><<<(rows + 7) / 8, 256, 0, st>>>(qg, k, v, L->q_norm, L->k_norm, L->v_inv_scale, rope_cos, rope_sin, rot, eps, qscale,
                                                     M, pos0, pos0_dev, n_h, n_kv, S.qq, S.sq, kv->kq, kv->sk, kv->vq);
-    if (!pos0_dev && M >= tc_min_m()) { tc::run<HD, REP>(L, kv, qg, M, pos0, n_h, n_kv, o, S, st); return; }
+    if (!pos0_dev && M >= TC_MIN_M) { tc::run<HD, REP>(L, kv, qg, M, pos0, n_h, n_kv, o, S, st); return; }
     const int nkeys_max = (pos0_dev ? max_pos : pos0) + M;
     int nsplit = 1;
     if (M <= MSPLIT) {

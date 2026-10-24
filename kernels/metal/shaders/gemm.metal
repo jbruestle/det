@@ -191,7 +191,7 @@ kernel void k_gemm_dectc_##BITS##_##BN(constant det_p_gemm& p [[buffer(0)]], uin
             if (i < (int)cT.get_capacity() && cT.is_valid_element(i)) {                                               \
                 auto idx = cT.get_multidimensional_index(i);                                                           \
                 const int n = n0 + idx[0], t = idx[1];                                                                 \
-                if (n < N && t < M) gemm_store(p, t, n, mul(mul((float)acc[i], c[n]), sx[t]));                         \
+                if (n < N && t < M) gemm_store(p, t, n, mul(mul(i64_to_f(acc[i]), c[n]), sx[t]));                         \
             }                                                                                                          \
         }                                                                                                              \
         return;                                                                                                        \
@@ -224,7 +224,7 @@ kernel void k_gemm_dectc_##BITS##_##BN(constant det_p_gemm& p [[buffer(0)]], uin
             if (n < N && t < M) {                                                                                      \
                 long v = 0;                                                                                            \
                 DET_U_GEMM for (int sp = 0; sp < splits; sp++) v += part[((ulong)sp * M + t) * N + n];                            \
-                gemm_store(p, t, n, mul(mul((float)v, c[n]), sx[t]));                                                  \
+                gemm_store(p, t, n, mul(mul(i64_to_f(v), c[n]), sx[t]));                                                  \
             }                                                                                                          \
         }                                                                                                              \
     }                                                                                                                  \
@@ -286,7 +286,7 @@ kernel void k_gemm_pre_##BITS##_##BM##_##BN(constant det_p_gemm& p [[buffer(0)]]
         if (cT.is_valid_element(i)) {                                                                                  \
             auto idx = cT.get_multidimensional_index(i);                                                               \
             const int n = n0 + idx[0], t = t0 + idx[1];                                                                \
-            if (n < N && t < M) gemm_store(p, t, n, mul(mul((float)acc[i], c[n]), sx[t]));                                \
+            if (n < N && t < M) gemm_store(p, t, n, mul(mul(i64_to_f(acc[i]), c[n]), sx[t]));                                \
         }                                                                                                              \
     }                                                                                                                  \
 }

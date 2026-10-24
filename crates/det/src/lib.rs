@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod calibrate;
 pub mod config;
+pub mod conformance;
 pub mod convert;
 pub mod cpu;
 pub mod gguf;

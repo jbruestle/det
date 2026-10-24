@@ -82,14 +82,8 @@ kernel void k_gdn_prep(constant det_p_gdn_prep& p [[buffer(0)]], uint2 tgid [[th
 }
 
 // JB columns of one v-head per threadgroup, P lanes per column (R = 128/P k dims each), NT = JB*P = 128 threads.
-#ifndef GDN_JB
-#define GDN_JB 32
-#endif
-#ifndef GDN_P
-#define GDN_P 16    // lanes per column (8 state registers per lane): 2x faster than 4 on the M5 Max
-#endif
-#define JB GDN_JB
-#define PP GDN_P
+#define JB DET_GDN_JB
+#define PP DET_GDN_P
 #define RR (128 / PP)
 #define LPP (32 / PP)
 #define KS (RR + 4)

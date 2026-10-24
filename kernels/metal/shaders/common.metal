@@ -6,49 +6,13 @@
 using namespace metal;
 
 #define DET_SIMD 32   // simdgroup width on Apple GPUs (threadExecutionWidth)
-// loop-unrolling switches (experiments via DET_METAL_DEFINES, e.g. "DET_U_TREE_ON=1"): full unrolling of the small
-// register-array loops; on Apple GPUs blanket unrolling increased code size and made several kernels slower
-#define DET_UNROLL_FULL _Pragma("clang loop unroll(full)")
-#ifndef DET_U_TREE_ON
-#define DET_U_TREE_ON 1    // measured: faster norms / GDN trees
-#endif
-#ifndef DET_U_GLUE_ON
-#define DET_U_GLUE_ON 0
-#endif
-#ifndef DET_U_GDN_ON
-#define DET_U_GDN_ON 0
-#endif
-#ifndef DET_U_ATTN_ON
-#define DET_U_ATTN_ON 0
-#endif
-#ifndef DET_U_GEMM_ON
-#define DET_U_GEMM_ON 0
-#endif
-#if DET_U_TREE_ON
-#define DET_U_TREE DET_UNROLL_FULL
-#else
-#define DET_U_TREE
-#endif
-#if DET_U_GLUE_ON
-#define DET_U_GLUE DET_UNROLL_FULL
-#else
+// Full unrolling of the small register-array loops: measured, only the tree reductions gain; unrolling the glue, GDN,
+// attention and GEMM loops grew the code and made several kernels slower.
+#define DET_U_TREE _Pragma("clang loop unroll(full)")
 #define DET_U_GLUE
-#endif
-#if DET_U_GDN_ON
-#define DET_U_GDN DET_UNROLL_FULL
-#else
 #define DET_U_GDN
-#endif
-#if DET_U_ATTN_ON
-#define DET_U_ATTN DET_UNROLL_FULL
-#else
 #define DET_U_ATTN
-#endif
-#if DET_U_GEMM_ON
-#define DET_U_GEMM DET_UNROLL_FULL
-#else
 #define DET_U_GEMM
-#endif
 
 namespace det {
 
@@ -56,10 +20,6 @@ namespace det {
 // arithmetic op (add/sub/mul/div/sqrt/fma, and compares them as zero), which the spec forbids.  Each primitive below
 // takes the hardware result when it is provably identical to the IEEE one (no denormal operand, result not in the
 // zero / denormal / minimum-normal range) and otherwise recomputes it exactly with integer arithmetic.
-// DET_SOFT_DENORM=0 (benchmarking only) uses the raw hardware ops.
-#ifndef DET_SOFT_DENORM
-#define DET_SOFT_DENORM 1
-#endif
 
 #define DET_EXP_MASK 0x7f800000u
 #define DET_ABS_MASK 0x7fffffffu
@@ -101,7 +61,13 @@ inline bool is_zero_bits(uint u) { return (u & DET_ABS_MASK) == 0u; }
 
 inline float mul_slow(float a, float b, float hw) {
     const uint ua = as_type<uint>(a), ub = as_type<uint>(b);
-    if (is_zero_bits(ua) || is_zero_bits(ub) || (ua & DET_EXP_MASK) == DET_EXP_MASK || (ub & DET_EXP_MASK) == DET_EXP_MASK) return hw;
+    if (is_zero_bits(ua) || is_zero_bits(ub)) return hw;
+    if ((ua & DET_EXP_MASK) == DET_EXP_MASK || (ub & DET_EXP_MASK) == DET_EXP_MASK) {
+        // inf * denormal is inf (the hardware flushes the denormal and gives NaN); NaN and inf * normal are hardware-exact
+        const bool a_inf = (ua & DET_ABS_MASK) == DET_EXP_MASK, b_inf = (ub & DET_ABS_MASK) == DET_EXP_MASK;
+        if ((a_inf && (ub & DET_EXP_MASK) == 0u) || (b_inf && (ua & DET_EXP_MASK) == 0u)) return as_type<float>(DET_EXP_MASK | ((ua ^ ub) & 0x80000000u));
+        return hw;
+    }
     bool na, nb; ulong ma, mb; int ea, eb;
     decompose(a, na, ma, ea); decompose(b, nb, mb, eb);
     return make_float(na != nb, ma * mb, ea + eb);
@@ -129,7 +95,8 @@ inline float add_slow(float a, float b, float hw) {
 }
 inline float div_slow(float a, float b, float hw) {
     const uint ua = as_type<uint>(a), ub = as_type<uint>(b);
-    if (is_zero_bits(ua) || (ua & DET_EXP_MASK) == DET_EXP_MASK || (ub & DET_EXP_MASK) == DET_EXP_MASK) return hw;
+    if ((ua & DET_EXP_MASK) == DET_EXP_MASK || (ub & DET_EXP_MASK) == DET_EXP_MASK) return hw;   // inf / denormal = inf, x / inf = 0, NaN: hardware-exact
+    if (is_zero_bits(ua)) return is_zero_bits(ub) ? hw : as_type<float>((ua ^ ub) & 0x80000000u);  // 0 / 0 = NaN; 0 / denormal = 0 (the hardware gives NaN)
     if (is_zero_bits(ub)) return as_type<float>(DET_EXP_MASK | ((ua ^ ub) & 0x80000000u));
     bool na, nb; ulong ma, mb; int ea, eb;
     decompose(a, na, ma, ea); decompose(b, nb, mb, eb);
@@ -143,7 +110,6 @@ inline float sqrt_slow(float a) {                      // a denormal (> 0): sqrt
     return sqrt((float)(2u * m)) * as_type<float>((uint)(-75 + 127) << 23);
 }
 
-#if DET_SOFT_DENORM
 inline float mul(float a, float b) {
     const float r = a * b;
     const uint ua = as_type<uint>(a), ub = as_type<uint>(b), ur = as_type<uint>(r);
@@ -168,13 +134,6 @@ inline float sqrt_(float a) {
     if (((ua & DET_EXP_MASK) != 0u) | is_zero_bits(ua) | ((ua >> 31) != 0u)) return sqrt(a);
     return sqrt_slow(a);
 }
-#else
-inline float mul(float a, float b) { return a * b; }
-inline float add(float a, float b) { return a + b; }
-inline float sub(float a, float b) { return a - b; }
-inline float div(float a, float b) { return a / b; }
-inline float sqrt_(float a) { return sqrt(a); }
-#endif
 // exact comparisons / max (the hardware compares denormals as zero); -0 < +0 here (never relevant: used on |x| and scores)
 inline int ord_key(float a) { const int i = as_type<int>(a); return i < 0 ? (i ^ 0x7fffffff) : i; }
 inline bool lt(float a, float b) { return ord_key(a) < ord_key(b); }

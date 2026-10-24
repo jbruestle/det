@@ -57,12 +57,12 @@ Water boils at 100 degrees Celsius at sea level, but at higher altitudes the boi
 }
 
 /// Runs the calibration input through `m` and returns the per-(attention layer, kv head) value scales.
-pub fn v_scales<B: Backend>(m: &mut Model<B>, ids: &[i32]) -> Vec<f32> {
+pub fn v_scales<B: Backend>(m: &mut Model<B>, ids: &[i32]) -> Result<Vec<f32>, String> {
     let layers: Vec<usize> = (0..m.cfg.layers.len()).filter(|&l| m.cfg.is_attention(l)).collect();
     let mut obs = AbsMax { n_kv: m.cfg.n_kv, hd: m.cfg.head_dim, absmax: vec![0.0; layers.len() * m.cfg.n_kv], layers };
     m.reset();
-    m.prefill(ids, Some(&mut obs));
-    obs.absmax.iter().map(|&a| if a == 0.0 { crate::model::DEFAULT_V_SCALE } else { a * HEADROOM / 32767.0 }).collect()
+    m.prefill(ids, Some(&mut obs))?;
+    Ok(obs.absmax.iter().map(|&a| if a == 0.0 { crate::model::DEFAULT_V_SCALE } else { a * HEADROOM / 32767.0 }).collect())
 }
 
 /// Writes `scales` into the metadata of the model's file in place (converted files reserve the room);

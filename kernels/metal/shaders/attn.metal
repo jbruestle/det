@@ -249,7 +249,7 @@ kernel void k_attn_acc_##HD##_##REP(constant det_p_attn& p [[buffer(0)]], uint3 
             const int r = i / HD, dd = i - r * HD;                                                                    \
             const long den = dens[r] + dens[REP + r] + dens[2 * REP + r] + dens[3 * REP + r];                         \
             const ulong hrow = (ulong)t * n_h + h0 + r;                                                               \
-            float ov = mul(div((float)accs[i], (float)den), vs);                                                      \
+            float ov = mul(div(i64_to_f(accs[i]), i64_to_f(den)), vs);                                                      \
             const float gate = qg[hrow * 2 * HD + HD + dd];                                                           \
             o[hrow * HD + dd] = mul(ov, sigmoid_f(gate));                                                             \
         }                                                                                                             \
@@ -440,7 +440,7 @@ kernel void k_attn_pacc_##HD##_##REP(constant det_p_attn& p [[buffer(0)]], uint3
                 const long num = acc[c][e] + 128 * den;                                                               \
                 const ulong hrow = (ulong)(t0 + tok) * n_h + h0 + r;                                                  \
                 if (p.nsplit == 1) {                                                                                  \
-                    const float ov = mul(div((float)num, (float)den), vs);                                            \
+                    const float ov = mul(div(i64_to_f(num), i64_to_f(den)), vs);                                            \
                     const float gate = qg[hrow * 2 * HD + HD + d];                                                    \
                     o[hrow * HD + d] = mul(ov, sigmoid_f(gate));                                                      \
                 } else {                                                                                              \
@@ -473,7 +473,7 @@ kernel void k_attn_fin_##HD(constant det_p_attn& p [[buffer(0)]], uint row [[thr
     if (d == 0) dsh = den;                                                                                            \
     threadgroup_barrier(mem_flags::mem_threadgroup);                                                                  \
     den = dsh;                                                                                                        \
-    float ov = mul(div((float)num, (float)den), ((device const float*)p.v_scale)[h / rep]);                           \
+    float ov = mul(div(i64_to_f(num), i64_to_f(den)), ((device const float*)p.v_scale)[h / rep]);                           \
     const float gate = ((device const float*)p.qg)[(ulong)row * 2 * HD + HD + d];                                     \
     ((device float*)p.o)[(ulong)row * HD + d] = mul(ov, sigmoid_f(gate));                                             \
 }

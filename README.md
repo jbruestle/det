@@ -14,6 +14,7 @@ det generate model.gguf --prompt "The capital of France is" --n 32          # th
 det generate model.gguf --chat --prompt "Write a haiku." --temp 0.7 --top-p 0.95   # the file's chat template; top-k/top-p
 det bench model.gguf --pp 512 --tg 128      det bench model.gguf --gemm     # throughput; per-linear GEMM rates
 det ppl model.gguf wikitext-test.txt --ctx 2048 --chunks 8                  # llama-perplexity protocol
+det conformance                             # every GPU op against the CPU reference, bit for bit, including the numerics' edge cases
 det info model.gguf  |  det tensor model.gguf blk.0.attn_norm.weight  |  det tokens model.gguf 248040 248060
 ```
 
@@ -51,10 +52,12 @@ Width presets measured on the 4B (wikitext-2, ctx 2048, 8 chunks; bf16 through l
   - `hooks.rs`: observation taps (residual stream, attention inputs/outputs, GDN inputs/outputs/state,
     logits, sampled tokens) for calibration, debugging and external observers; `calibrate.rs` uses them.
   - `gguf.rs`, `config.rs`, `tokenizer.rs`: the file, its hyperparameters, its tokenizer.
-  - `tests/backends.rs`: every GPU op against the CPU backend, bit for bit; `tests/tokenizer.rs`.
+  - `conformance.rs`: every GPU op against the CPU backend on random inputs and on the edge cases of the
+    numerics (denormal and zero rows, a GDN state decaying through the denormal range, ties, degenerate
+    sampling parameters), bit for bit; `det conformance` runs it on an installed build, `tests/backends.rs`
+    under cargo. `tests/tokenizer.rs`.
 - `crates/det-sys`: FFI to the GPU runtime, one C API for both; the `metal` feature compiles
-  `kernels/metal` with the shaders embedded (cargo tracks shader edits; `DET_METAL_SHADERS=<dir>` reads
-  them from disk instead), the `cuda` feature runs nvcc from `CUDA_HOME` (default `/usr/local/cuda`) on
+  `kernels/metal` with the shaders embedded (cargo tracks shader edits), the `cuda` feature runs nvcc from `CUDA_HOME` (default `/usr/local/cuda`) on
   `kernels/cuda` for the SM versions in `DET_CUDA_ARCHS` (default `120,89,80`), linking `cudart_static`.
 - `crates/det-cli`: the `det` command.
 - `kernels/metal`: the Metal runtime (`det_metal.mm`: unified-memory buffers, one in-order queue,
@@ -62,9 +65,7 @@ Width presets measured on the 4B (wikitext-2, ctx 2048, 8 chunks; bf16 through l
   denormals; `gemm`, `attn`, `gdn`, `glue`, `sample`). `det_metal.h` is the C API.
 - `kernels/cuda`: the CUDA runtime (`runtime.cu`: device buffers, the default stream) and the kernels
   (`common.cuh`: the fp32 primitives; `gemm`, `attn`, `gdn`, `norm`, `sample`). `det_cuda.h` is the C API,
-  the same functions as `det_metal.h`. Knobs: `DET_ATTN_TC` (tensor-core attention from this many tokens
-  on, default 16; 0 disables), `DET_GEMM_DP4A` (1 forces the dp4a GEMM for M > 8, 2 the 32x32-warp-tile
-  MMA kernel for M > 64).
+  the same functions as `det_metal.h`.
 
 ## Status
 

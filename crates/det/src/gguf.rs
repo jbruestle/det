@@ -276,6 +276,15 @@ impl Gguf {
         let tindex = tensors.iter().enumerate().map(|(i, t)| (t.name.clone(), i)).collect();
         let alignment = kv.iter().find(|(k, _)| k == "general.alignment").and_then(|(_, v)| v.as_u64()).unwrap_or(32) as usize;
         let data_start = c.pos.div_ceil(alignment) * alignment;
+        for t in &tensors {
+            let bytes = match t.ty() {
+                Some(ty) if !t.dims.is_empty() && t.dims[0].is_multiple_of(32) || matches!(t.ty(), Some(GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)) => ty.row_bytes(t.dims[0]) * t.dims[1..].iter().product::<usize>(),
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("tensor {} has unsupported type {} or shape {:?}", t.name, ggml_type_name(t.type_id), t.dims))),
+            };
+            if t.dims.len() > 2 || data_start + t.offset + bytes > map.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("tensor {} ({:?} at {}) does not fit the file", t.name, t.dims, t.offset)));
+            }
+        }
         Ok(Gguf { map, kv, index, tensors, tindex, data_start, alignment })
     }
 

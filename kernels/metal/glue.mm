@@ -13,14 +13,13 @@ static void launch_norm(bool norm, const float* x, const float* w, float eps, in
     if (mx && (n % 128)) fail("det_rmsnorm/quant: group mode needs n %% 128 == 0 (n=%d)", n);
     int NT, CHUNK;
     // M <= 8 (decode): 512/1024-thread threadgroups (lowest latency); larger M: 128/256 threads x 16/32 elements (throughput)
-    static const bool wide = getenv("DET_NORM_WIDE") != nullptr;
     switch (np) {
         case 32: NT = 32; CHUNK = 1; break;   case 64: NT = 32; CHUNK = 2; break;    case 128: NT = 32; CHUNK = 4; break;
         case 256: NT = 32; CHUNK = 8; break;  case 512: NT = 32; CHUNK = 16; break;  case 1024: NT = 256; CHUNK = 4; break;
         case 2048: NT = 128; CHUNK = 16; break; case 4096: NT = 256; CHUNK = 16; break; case 8192: NT = 256; CHUNK = 32; break;
         default: fail("det_rmsnorm: unsupported n=%d", n);
     }
-    if (wide || M <= 8) { if (np == 2048) { NT = 512; CHUNK = 4; } else if (np == 4096) { NT = 1024; CHUNK = 4; } else if (np == 8192) { NT = 1024; CHUNK = 8; } }
+    if (M <= 8) { if (np == 2048) { NT = 512; CHUNK = 4; } else if (np == 4096) { NT = 1024; CHUNK = 4; } else if (np == 8192) { NT = 1024; CHUNK = 8; } }
     if (mx && CHUNK < 4) fail("det_rmsnorm/quant: group mode needs n >= 128 (n=%d)", n);
     std::string name = "k_norm_" + std::to_string(NT) + "_" + std::to_string(CHUNK) + "_" + (norm ? "1" : "0");
     det_p_norm p = { gpu(x), gpu_or_zero(w), gpu_or_zero(y), gpu_or_zero(xq), gpu_or_zero(sx), gpu_or_zero(mx), eps, n };

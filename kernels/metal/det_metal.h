@@ -3,7 +3,7 @@
 //     the host reads/writes it directly (after det_sync), the kernels get the matching GPU address;
 //   * det_stream_t is accepted for signature compatibility and ignored: there is one in-order command queue.
 //     Work is encoded into the current command buffer; det_sync() commits it and waits, det_flush() commits only.
-// The shaders are compiled from source at first use (embedded at build time; DET_METAL_SHADERS=<dir> overrides).
+// The shaders are compiled from source at first use (embedded at build time).
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

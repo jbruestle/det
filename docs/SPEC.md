@@ -21,7 +21,8 @@ bit; `crates/det/tests` checks that they do.
    +0.0 to the next power of two: `s[i] = s[2i] + s[2i+1]` per level. Used for RMSNorm / l2norm sums
    of squares and the Gated DeltaNet contractions. (A warp butterfly with *ascending* xor offsets over
    aligned contiguous chunks reproduces it exactly.)
-4. Max is order-free and may be computed any way.
+4. Max is order-free and may be computed any way; `fmax` / `fmin` order −0 below +0, so a maximum is
+   unique even between zeros.
 
 ## 2. Tensor formats
 
@@ -127,8 +128,8 @@ and is not allowed).
 `l = logits · inv_temp; w_i = rint(exp_f(l_i − max) · 2^32)` as integers. Candidates are ordered by
 (w descending, index ascending); optional top-k keeps the first k, optional top-p keeps the shortest
 prefix whose integer sum reaches `ceil(p24 · Σw / 2^24)` with `p24 = rint(top_p · 2^24)`; a token is
-kept when both keep it. `u = rng mod Σ kept w`; pick the smallest kept index whose inclusive prefix sum
-of kept weights exceeds `u`. RNG = splitmix64, one draw per token.
+kept when both keep it (`top_p ≤ 0` keeps the first candidate only). `u = rng mod Σ kept w`; pick the smallest
+kept index whose inclusive prefix sum of kept weights exceeds `u`. RNG = splitmix64, one draw per token.
 
 ## 6. Model file
 
@@ -160,5 +161,7 @@ key runs with `v_scale = 2^-10`.
 ## 9. Open risks
 * Static V scale clipping on pathological inputs (8× headroom over calibration).
 * Softmax probability fixed point 2^-24 absolute resolution (worse than fp32 for p < 2^-14; negligible).
-* Cross-generation determinism has been demonstrated on one Apple GPU against the CPU reference;
-  other Apple chips and the CUDA port are the next validation.
+* Cross-generation determinism has been demonstrated on one Apple GPU and one NVIDIA GPU against the CPU
+  reference; `det conformance` (`crates/det/src/conformance.rs`) checks every op of an installed build
+  against the CPU reference, including the edge cases of the numerics, and is the first thing to run on a
+  new chip, driver or OS.

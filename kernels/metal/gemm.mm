@@ -34,13 +34,9 @@ void det_gemm_ex(const det_qlinear* Lp, const int8_t* xq, const float* sx, const
         p.nparts = nparts;
         for (int i = 0; i < nparts; i++) { p.ydst[i] = gpu(dsts[i]); p.yoff[i] = offs[i]; }
     } else if (!y) fail("det_gemm: y == NULL");
-    const char* force = getenv("DET_GEMM_FORCE");   // "dec" / "pre" (testing)
-    const bool dec = force ? (force[0] == 'd') : (M <= 8);
-    if (dec) {
-        if (M > 8) fail("det_gemm: decode kernel forced with M=%d > 8", M);
+    if (M <= 8) {
         // row tile: 128 rows amortise the per-op cost of the tensor unit better; 64 rows for small N (more threadgroups)
-        static const int BN_env = getenv("DET_GEMM_BN") ? atoi(getenv("DET_GEMM_BN")) : 0;
-        const int BN = BN_env ? BN_env : (L.N >= 8192 ? 128 : 64);
+        const int BN = L.N >= 8192 ? 128 : 64;
         const int ntg = (L.N + BN - 1) / BN;
         // split K when there are too few threadgroups to hide memory latency (needs the scratch)
         int splits = 1;
@@ -62,9 +58,8 @@ void det_gemm_ex(const det_qlinear* Lp, const int8_t* xq, const float* sx, const
         std::string name = "k_gemm_dectc_" + std::to_string(L.bits) + "_" + std::to_string(BN);
         dispatch(name.c_str(), &p, sizeof p, MTLSizeMake(ntg, splits, 1), MTLSizeMake(128, 1, 1));
     } else {
-        static const int bm_env = getenv("DET_GEMM_PRE_BM") ? atoi(getenv("DET_GEMM_PRE_BM")) : 0;
         // measured: 32-row tiles run the int8 op at ~55 TOPS vs ~34 for 64-row tiles (register pressure of the 64x64 result)
-        const int BM = bm_env ? bm_env : (M <= 16 ? 16 : 32), BN = 64;
+        const int BM = M <= 16 ? 16 : 32, BN = 64;
         std::string name = "k_gemm_pre_" + std::to_string(L.bits) + "_" + std::to_string(BM) + "_" + std::to_string(BN);
         dispatch(name.c_str(), &p, sizeof p, MTLSizeMake((L.N + BN - 1) / BN, (M + BM - 1) / BM, 1), MTLSizeMake(128, 1, 1));
     }

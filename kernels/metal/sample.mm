@@ -31,7 +31,7 @@ void run(const float* logits, int M, int V, float inv_temp, int top_k, float top
     const int use_k = (top_k > 0 && top_k < V) ? 1 : 0;
     const int use_p = (top_p < 1.0f) ? 1 : 0;
     unsigned long long p24 = 0;
-    if (use_p) { const int rm = fegetround(); fesetround(FE_TONEAREST); p24 = (unsigned long long)llrint((double)top_p * 16777216.0); fesetround(rm); }
+    if (use_p && top_p > 0.0f) { const int rm = fegetround(); fesetround(FE_TONEAREST); p24 = (unsigned long long)llrint((double)top_p * 16777216.0); fesetround(rm); }
     det_p_smp p = { gpu(logits), gpu(c.keys), gpu(c.mx), gpu(c.hist), gpu(c.part), gpu(c.state), gpu(z), gpu(out), inv_temp, V, top_k, 0, NBLK, p24, use_k, use_p };
     dispatch("k_smp_max", &p, sizeof p, MTLSizeMake(M, 1, 1), MTLSizeMake(SNT, 1, 1));
     dispatch("k_smp_weights", &p, sizeof p, MTLSizeMake(NBLK, M, 1), MTLSizeMake(SNT, 1, 1));

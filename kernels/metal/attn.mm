@@ -13,6 +13,7 @@ constexpr int ATK = 32;
 constexpr int MSPLIT = 256;                // key splitting (int64 scratch) only for M <= MSPLIT
 constexpr int SPLIT_TARGET_BLOCKS = 512;
 constexpr int NSPLIT_CAP = 128;
+constexpr int PRE_MIN = 16;                // tokens from which the prefill attention path runs
 inline size_t align_up(size_t x) { return (x + 255) & ~(size_t)255; }
 inline int nsplit_max(int M) { int s = SPLIT_TARGET_BLOCKS / (M < 1 ? 1 : M); return s < 1 ? 1 : (s > NSPLIT_CAP ? NSPLIT_CAP : s); }
 struct Scratch { int8_t* qq; float* sq; uint32_t* mx; long long* num; long long* den; size_t bytes; };
@@ -62,9 +63,8 @@ void det_attention(const det_attn_layer* L, const det_kv_cache* kv, const float*
     const std::string hds = std::to_string(hd), sfx = hds + "_" + std::to_string(rep);
     const int rows = M * n_h + 2 * M * n_kv;
     dispatch(("k_attn_prep_" + hds).c_str(), &p, sizeof p, MTLSizeMake((rows + 7) / 8, 1, 1), MTLSizeMake(256, 1, 1));
-    // prefill path (row-batched blocks, 128-key tiles, P.V on the tensor unit): M >= DET_ATTN_PRE_MIN (env; 0 = off)
-    static const int pre_min = getenv("DET_ATTN_PRE") ? atoi(getenv("DET_ATTN_PRE")) : 16;   // DET_ATTN_PRE=0 disables
-    if (pre_min > 0 && M >= pre_min && kv->vlo && kv->vhi) {
+    // prefill path (row-batched blocks, 128-key tiles, P.V on the tensor unit) from PRE_MIN tokens on
+    if (M >= PRE_MIN && kv->vlo && kv->vhi) {
         const int ntok = 16 / rep, ntiles = (M + ntok - 1) / ntok;
         // key splits so that there are enough threadgroups for the cores (int64 partials need the split scratch: M <= MSPLIT)
         int ps = 1;

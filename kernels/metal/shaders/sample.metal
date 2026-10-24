@@ -92,7 +92,8 @@ kernel void k_smp_scan(constant det_p_smp& p [[buffer(0)]], uint row [[threadgro
             for (int d = 0; d < 256; d++) total += sum[d];
             const ulong th = total >> 32, tl = total & 0xFFFFFFFFul;
             const ulong A = th * p.p24, B = tl * p.p24 + ((1ul << 24) - 1ul);
-            st->remthresh = (A << 8) + (B >> 24);
+            const ulong th_ = (A << 8) + (B >> 24);
+            st->remthresh = th_ == 0ul ? 1ul : th_;   // a zero threshold keeps the first candidate, like a threshold of 1
         }
         if (p.use_k) {
             ulong need = st->remk, acc = 0; int dsel = 0;

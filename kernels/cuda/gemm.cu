@@ -17,7 +17,6 @@
 //   In every kernel the int32 group partial is scaled by m[n][g]*mx[t][g] (uint32) into int64 accumulators.
 // All integer sums may be done in any order.  The fp32 multiplies use det::mul (no FMA).  Every kernel's epilogue goes
 // through Out::store: plain y, y += result, or the columns routed into up to 4 part buffers (det_gemm_ex).
-// DET_GEMM_DP4A=1 forces k_prefill for all M > 8, =2 forces k_mma for M > 64 (testing / fallback).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1014,20 +1013,12 @@ void launch_mma2(const det_qlinear& L, const int8_t* xq, const float* sx, const 
     k_mma2<BITS><<<grid, C::NT, C::SMEM, st>>>(L.wq, L.c, L.m, L.N, L.K, xq, sx, mx, xs, M, y);    DET_CHECK(cudaGetLastError());
 }
 
-int prefill_mode() {   // 0 = auto, 1 = force the dp4a prefill for M > 32, 2 = force k_mma (32x32 warp tiles) for M > 64
-    static int mode = -1;
-    if (mode < 0) { const char* e = getenv("DET_GEMM_DP4A"); mode = e ? atoi(e) : 0; }
-    return mode;
-}
-
 template <int BITS>
 void gemm_bits(const det_qlinear& L, const int8_t* xq, const float* sx, const uint16_t* mx, int M, const Out& y, cudaStream_t st) {
     if (M <= 8) decode_by_m<BITS>(L, xq, sx, mx, M, y, st);
     else if (M <= 16) launch_prefill<BITS, 1>(L, xq, sx, mx, M, y, st);
     else if (M <= 32) launch_prefill<BITS, 2>(L, xq, sx, mx, M, y, st);
-    else if (prefill_mode() == 1) launch_prefill<BITS, 4>(L, xq, sx, mx, M, y, st);
     else if (M <= 64) launch_mma<BITS, 2, 2, 3>(L, xq, sx, mx, M, y, st);
-    else if (prefill_mode() == 2) launch_mma<BITS, 4, 2, 3>(L, xq, sx, mx, M, y, st);
     else launch_mma2<BITS>(L, xq, sx, mx, M, y, st);
 }
 

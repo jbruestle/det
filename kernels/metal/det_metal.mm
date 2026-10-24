@@ -48,33 +48,6 @@ static std::once_flag g_once;
 
 extern "C" const char* const det_embedded_shaders;
 
-static std::string read_file(const std::string& path) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) fail("cannot open shader source %s", path.c_str());
-    std::string s;
-    char buf[65536];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
-    fclose(f);
-    return s;
-}
-
-// The shader sources: embedded at build time, or read from DET_METAL_SHADERS=<dir> (params.h in its parent).
-static std::string shader_source() {
-    const char* dir_env = getenv("DET_METAL_SHADERS");
-    if (!dir_env) return det_embedded_shaders;
-    std::string dir = dir_env;
-    std::string src = read_file(dir + "/../params.h") + "\n" + read_file(dir + "/common.metal") + "\n";
-    NSError* err = nil;
-    NSArray* files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:[NSString stringWithUTF8String:dir.c_str()] error:&err];
-    if (!files) fail("cannot list shader dir %s", dir.c_str());
-    std::vector<std::string> names;
-    for (NSString* f in files) if ([f hasSuffix:@".metal"] && ![f isEqualToString:@"common.metal"]) names.push_back(f.UTF8String);
-    std::sort(names.begin(), names.end());
-    for (auto& n : names) src += "\n// ===== " + n + "\n" + read_file(dir + "/" + n) + "\n";
-    return src;
-}
-
 static void init_once() {
     @autoreleasepool {
         g = new Ctx();
@@ -88,24 +61,13 @@ static void init_once() {
         g->rs = [g->dev newResidencySetWithDescriptor:rd error:&err];
         if (!g->rs) fail("residency set: %s", err.localizedDescription.UTF8String);
         [g->q addResidencySet:g->rs];
-        std::string src = "#define __DET_METAL__ 1\n";
-        if (const char* defs = getenv("DET_METAL_DEFINES")) {   // "A=1,B=2" -> #define lines (experiments)
-            std::string d = defs; size_t pos = 0;
-            while (pos <= d.size()) {
-                size_t e = d.find(',', pos); if (e == std::string::npos) e = d.size();
-                std::string kv = d.substr(pos, e - pos); size_t eq = kv.find('=');
-                if (!kv.empty()) src += "#define " + (eq == std::string::npos ? kv : kv.substr(0, eq) + " " + kv.substr(eq + 1)) + "\n";
-                pos = e + 1;
-            }
-        }
-        src += shader_source();
+        const std::string src = det_embedded_shaders;
         MTLCompileOptions* opt = [MTLCompileOptions new];
         opt.mathMode = MTLMathModeSafe;                                    // no fast math, no contraction
         opt.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
         opt.languageVersion = MTLLanguageVersion4_0;
         g->lib = [g->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:opt error:&err];
         if (!g->lib) fail("shader compilation failed:\n%s", err.localizedDescription.UTF8String);
-        if (getenv("DET_METAL_VERBOSE")) fprintf(stderr, "det: shaders compiled (%zu bytes)\n", src.size());
         g->inited = true;
     }
 }
@@ -153,11 +115,9 @@ static void ensure_encoder() {
     if (!g->cb) { g->cb = [g->q commandBuffer]; g->ndispatch_cb = 0; }
     // Bindless access (raw GPU addresses) is invisible to Metal's hazard tracking unless the buffers are declared with
     // useResources: every live buffer is declared read+write on each (serial) encoder, so Metal orders every dispatch
-    // after the previous one.  DET_METAL_BARRIER=1 additionally inserts an explicit memory barrier after each dispatch
-    // (2x slower decode; debugging aid).
+    // after the previous one.
     if (!g->enc) {
-        static const bool explicit_barrier = getenv("DET_METAL_BARRIER") != nullptr;
-        g->enc = explicit_barrier ? [g->cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent] : [g->cb computeCommandEncoder];
+        g->enc = [g->cb computeCommandEncoder];
         // every dispatch may read or write any buffer: declaring them all lets Metal's hazard tracking serialise
         // consecutive dispatches (residency is handled by the residency set; this call is about tracking)
         if (g->all_bufs.count) {
@@ -192,11 +152,7 @@ void dispatch(const char* name, const std::vector<FnConst>& consts, const void* 
     [g->enc setBytes:params length:psize atIndex:0];
     if (tgmem) [g->enc setThreadgroupMemoryLength:tgmem atIndex:0];
     [g->enc dispatchThreadgroups:grid_tg threadsPerThreadgroup:tg];
-    static const bool explicit_barrier = getenv("DET_METAL_BARRIER") != nullptr;
-    if (explicit_barrier) [g->enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     g->ndispatch++;
-    static const bool sync_every = getenv("DET_METAL_SYNC_EVERY") != nullptr;   // debugging aid
-    if (sync_every) { commit(true); return; }
     // keep the GPU busy during long encodes: commit every so often (command buffers on one queue run in order)
     if (++g->ndispatch_cb >= 256) commit(false);
 }

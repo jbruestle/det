@@ -8,7 +8,7 @@ const DEFAULT_BACKEND: &str = if cfg!(target_os = "linux") { "cuda" } else if cf
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
+        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det conformance [--backend metal|cuda]   (every GPU op against the CPU reference, bit for bit; exit code 1 on a mismatch)\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
     );
     std::process::exit(2)
 }
@@ -162,9 +162,9 @@ fn generate<B: Backend>(a: &Args, path: &Path, backend: B) {
     if a.flag("dump") {
         let c = &m.cfg;
         let mut d = Dump { hidden: c.hidden, mixer_w: c.gdn_v_heads * c.gdn_dv };
-        m.prefill(&ids, Some(&mut d));
+        m.prefill(&ids, Some(&mut d)).unwrap_or_else(|e| panic!("{e}"));
     } else {
-        m.prefill::<NoObs>(&ids, None);
+        m.prefill::<NoObs>(&ids, None).unwrap_or_else(|e| panic!("{e}"));
     }
     let tp = t0.elapsed().as_secs_f64();
     let t0 = Instant::now();
@@ -173,7 +173,8 @@ fn generate<B: Backend>(a: &Args, path: &Path, backend: B) {
         let piece = tk.tokenizer.decode(&[id as u32], false).unwrap_or_default();
         eprint!("{piece}");
         text.push_str(&piece);
-    });
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
     eprintln!();
     let td = t0.elapsed().as_secs_f64();
     eprintln!("prefill {} tok in {tp:.3}s = {:.1} tok/s; decode {} tok in {td:.3}s = {:.2} tok/s", ids.len(), ids.len() as f64 / tp, out.len(), out.len() as f64 / td);
@@ -182,6 +183,21 @@ fn generate<B: Backend>(a: &Args, path: &Path, backend: B) {
         let bytes: Vec<u8> = m.logits().iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(p, bytes).unwrap();
     }
+}
+
+/// Runs the conformance suites of the GPU backend against the CPU reference and prints every check.
+fn conformance<B: Backend>(backend: B, prim: det::conformance::Prim) -> ! {
+    let t0 = Instant::now();
+    let r = det::conformance::run(&backend, prim);
+    for (name, mismatch) in &r.checks {
+        match mismatch {
+            None => println!("ok    {name}"),
+            Some(m) => println!("FAIL  {name}: {m}"),
+        }
+    }
+    let failed = r.failures().count();
+    println!("{}: {} checks, {failed} failed ({:.1}s)", backend.name(), r.checks.len(), t0.elapsed().as_secs_f64());
+    std::process::exit(if failed == 0 { 0 } else { 1 })
 }
 
 fn load<B: Backend>(a: &Args, path: &Path, backend: B) -> Model<B> {
@@ -197,7 +213,7 @@ fn calibrate<B: Backend>(a: &Args, path: &Path, backend: B) {
     let mut m = load(a, path, backend);
     let tk = det::tokenizer::from_gguf(&m.gguf).unwrap_or_else(|e| panic!("tokenizer: {e}"));
     let ids = det::calibrate::calibration_ids(&tk.tokenizer, m.cfg.vocab, a.num("random", 512));
-    let scales = det::calibrate::v_scales(&mut m, &ids);
+    let scales = det::calibrate::v_scales(&mut m, &ids).unwrap_or_else(|e| panic!("{e}"));
     for (i, s) in scales.chunks(m.cfg.n_kv).enumerate() {
         eprintln!("attention layer {i}: v_scale {:?}", s);
     }
@@ -299,18 +315,18 @@ fn bench<B: Backend>(a: &Args, path: &Path, backend: B) {
     let pp: usize = a.num("pp", 512);
     let tg: usize = a.num("tg", 128);
     let ids: Vec<i32> = (0..pp).map(|i| 1000 + (i * 7919 % 50000) as i32).collect();
-    m.prefill::<NoObs>(&ids[..1.min(pp)], None);
+    m.prefill::<NoObs>(&ids[..1.min(pp)], None).unwrap();
     m.backend.sync();
     m.reset();
     let t0 = Instant::now();
-    m.prefill::<NoObs>(&ids, None);
+    m.prefill::<NoObs>(&ids, None).unwrap();
     m.backend.sync();
     let tp = t0.elapsed().as_secs_f64();
     let t0 = Instant::now();
     let mut id = 1000;
     for _ in 0..tg {
-        m.forward::<NoObs>(&[id], None);
-        id = m.pick(&mut Sampling::greedy());
+        m.forward::<NoObs>(&[id], None).unwrap();
+        id = m.pick(&mut Sampling::greedy()).unwrap();
     }
     m.backend.sync();
     let td = t0.elapsed().as_secs_f64();
@@ -336,7 +352,7 @@ fn ppl<B: Backend>(a: &Args, path: &Path, text_path: &Path, backend: B) {
         m.reset();
         let mut pos = 0;
         for batch in chunk.chunks(m.max_batch) {
-            m.forward::<NoObs>(batch, None);
+            m.forward::<NoObs>(batch, None).unwrap();
             let logits = m.logits();
             for i in 0..batch.len() {
                 let p = pos + i;
@@ -384,6 +400,13 @@ fn main() {
                 _ => calibrate(&b, &out, det::cpu::Cpu),
             };
         }
+        "conformance" => match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
+            #[cfg(target_os = "macos")]
+            "metal" => conformance(det::metal::Metal::new(), &det::metal::test_prim),
+            #[cfg(target_os = "linux")]
+            "cuda" => conformance(det::cuda::Cuda::new(), &det::cuda::test_prim),
+            other => panic!("conformance needs a GPU backend ({other} is not one, or is not built in)"),
+        },
         "info" => return info(Path::new(pos(1))),
         "tensor" => return tensor(Path::new(pos(1)), pos(2), a.pos.get(3).map_or(8, |v| v.parse().unwrap())),
         "tokens" => return tokens(Path::new(pos(1)), pos(2).parse().unwrap(), pos(3).parse().unwrap()),
