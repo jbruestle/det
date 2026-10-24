@@ -156,6 +156,12 @@ key runs with `v_scale = 2^-10`.
   contractions run on the tensor unit (int8 × int8 → int32, exact).
 * CUDA (`kernels/cuda`, pending the port to the GGUF formats): `-fmad=false`, no `--use_fast_math`,
   `-ftz=false`; `__fmul_rn/__fadd_rn/__fdiv_rn/__fsqrt_rn`, `__float2int_rn`, `__ll2float_rn`.
+* x86-64 (`crates/det/src/x86`): AVX2 intrinsics, one per spec op (`_mm256_mul_ps`, `_mm256_add_ps`,
+  `_mm256_div_ps`, `_mm256_floor_ps`, `_mm256_round_ps` to nearest even, `_mm256_cvtps_epi32`), which the
+  compiler never contracts; the default MXCSR (round to nearest, no FTZ / DAZ). The integer dots are
+  `vpdpbusd` (u8 × s8 → s32, exact) or, without VNNI, `vpmaddubsw` + `vpmaddwd`, whose saturating 16-bit
+  pair sums stay exact for codes ≤ 127 (W8 codes go through their two nibbles). `treesum` is built from
+  in-register pair sums (`vhaddps`), which is the same tree.
 
 ## 9. Open risks
 * Static V scale clipping on pathological inputs (8× headroom over calibration).

@@ -10,7 +10,7 @@ sum is exact integer arithmetic, and everything else is a fixed sequence of IEEE
 ```
 cargo build --release                        # the det binary with the GPU backend of the platform (Metal on macOS, CUDA on Linux)
 det convert Qwen3.5-4B-BF16.gguf             # bf16/f16 GGUF (as llama.cpp's converter writes) -> Qwen3.5-4B-det-w6.gguf, calibrated
-det generate model.gguf --prompt "The capital of France is" --n 32          # the GPU backend (default) or --backend cpu
+det generate model.gguf --prompt "The capital of France is" --n 32          # the GPU backend (default), --backend cpu (AVX2 / AVX-VNNI) or --backend ref
 det generate model.gguf --chat --prompt "Write a haiku." --temp 0.7 --top-p 0.95   # the file's chat template; top-k/top-p
 det bench model.gguf --pp 512 --tg 128      det bench model.gguf --gemm     # throughput; per-linear GEMM rates
 det ppl model.gguf wikitext-test.txt --ctx 2048 --chunks 8                  # llama-perplexity protocol
@@ -44,14 +44,20 @@ Width presets measured on the 4B (wikitext-2, ctx 2048, 8 chunks; bf16 through l
     quantization, the attention and GDN steps, sampling). Normative.
   - `quantize.rs`, `convert.rs`: the weight quantizer and `det convert`.
   - `backend.rs`: the op set a backend implements (`Backend`) and its buffer type `Buf`.
-  - `cpu.rs`: the CPU backend, the spec applied row by row (parallel only across independent rows and heads).
+  - `cpu.rs`: the reference backend (`--backend ref`), the spec applied row by row (parallel only across
+    independent rows and heads).
+  - `x86/`: the x86-64 backend (`--backend cpu`): `gemm.rs` repacks the weights at load into 8-row strips
+    and runs the integer GEMM on `vpdpbusd` (AVX-VNNI) or `vpmaddubsw` (AVX2 only); `attn.rs`, `gdn.rs`,
+    `glue.rs` (norms and activation quantization) and `simd.rs` (the fp32 primitives on 8 lanes) cover the
+    rest. Threads come from rayon (`RAYON_NUM_THREADS`); `DET_X86_VNNI=0` forces the AVX2 dot products.
   - `metal.rs`: the Metal backend over `det-sys`; builds the tiled weight layout the kernels read.
   - `cuda.rs`: the CUDA backend over `det-sys`; row-major weights, the KV cache without Metal's V planes.
   - `qwen35.rs`: the network's forward pass against the op set; `model.rs`: loading, buffers, generation.
   - `hooks.rs`: observation taps (residual stream, attention inputs/outputs, GDN inputs/outputs/state,
     logits, sampled tokens) for calibration, debugging and external observers; `calibrate.rs` uses them.
   - `gguf.rs`, `config.rs`, `tokenizer.rs`: the file, its hyperparameters, its tokenizer.
-  - `tests/backends.rs`: every GPU op against the CPU backend, bit for bit; `tests/tokenizer.rs`.
+  - `tests/backends.rs`: every op of the GPU and x86 backends against the reference backend, bit for bit;
+    `tests/tokenizer.rs`.
 - `crates/det-sys`: FFI to the GPU runtime, one C API for both; the `metal` feature compiles
   `kernels/metal` with the shaders embedded (cargo tracks shader edits; `DET_METAL_SHADERS=<dir>` reads
   them from disk instead), the `cuda` feature runs nvcc from `CUDA_HOME` (default `/usr/local/cuda`) on
@@ -91,4 +97,9 @@ prefill (300 tokens for the 4B, 512 for the 27B); the 27B logits after 8k, 64k a
 identical for prefill batches of 256 and 1024. Perplexity on CUDA: 4B W6 7.57, 27B W6 5.08 over 8
 chunks (llama.cpp Q6_K 5.07).
 
-Next: CUDA graphs for decode, more architectures.
+On a Core Ultra 9 285K (8 P + 16 E cores, AVX2 + AVX-VNNI, DDR5 reading at ~70 GB/s), the x86 backend
+prefills the 4B W6 at 495 tok/s (512 tokens, batch 256) and decodes at 17.1 tok/s; the 27B W6 prefills at
+91 tok/s and decodes at 3.0 tok/s, the DRAM rate of its 22.6 GB. Its logits match the reference and CUDA
+backends bit for bit on the same prompts, with and without VNNI.
+
+Next: CUDA graphs for decode, AVX-512 / AMX paths, more architectures.

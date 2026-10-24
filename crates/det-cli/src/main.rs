@@ -8,7 +8,7 @@ const DEFAULT_BACKEND: &str = if cfg!(target_os = "linux") { "cuda" } else if cf
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
+        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|ref|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
     );
     std::process::exit(2)
 }
@@ -402,7 +402,9 @@ fn main() {
         };
     }
     match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
-        "cpu" => run!(det::cpu::Cpu),
+        #[cfg(target_arch = "x86_64")]
+        "cpu" if det::x86::X86::available() => run!(det::x86::X86::new()),
+        "cpu" | "ref" => run!(det::cpu::Cpu),
         #[cfg(target_os = "macos")]
         "metal" => run!(det::metal::Metal::new()),
         #[cfg(target_os = "linux")]
