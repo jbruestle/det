@@ -22,17 +22,18 @@ Conventions:
 
 Orientation:
 
-- Workspace: `crates/det` (library; `spec/` normative, `cpu.rs`, `metal.rs`, `cuda.rs` backends behind
-  one `Backend` trait), `crates/det-sys` (FFI and the GPU runtime build), `crates/det-cli` (the `det`
-  binary). `kernels/metal` and `kernels/cuda` hold the runtimes and shaders, one C API for both.
+- Workspace: `crates/det` (library; `spec/` normative, `cpu.rs` reference, `x86/`, `metal.rs`, `cuda.rs`
+  backends behind one `Backend` trait), `crates/det-sys` (FFI and the GPU runtime build), `crates/det-cli`
+  (the `det` binary). `kernels/metal` and `kernels/cuda` hold the runtimes and shaders, one C API for both.
 - `crates/det-sys/build.rs` compiles the GPU runtime: the Metal runtime with the shaders embedded
   (feature `metal`, macOS only, cargo tracks shader edits) or the CUDA kernels with nvcc (feature `cuda`;
   `det-cli` turns it on for Linux; `CUDA_HOME`, `DET_CUDA_ARCHS`). Nothing reads the environment at run
   time: a kernel is chosen by shape alone, so two installs of one build run the same code.
 - Tests: `cargo test --release -p det` on a Mac, `cargo test --release -p det --features cuda` on a CUDA
-  box (spec unit tests; the conformance suites of `crates/det/src/conformance.rs`: every GPU op against the
-  CPU backend bit for bit, edge cases included; `det conformance` runs the same suites on an installed
-  build). End to end: `det generate <gguf> --backend cpu --logits a.bin` vs the GPU run and `cmp`.
+  box, `--no-default-features` on any x86-64 box (spec unit tests; the conformance suites of
+  `crates/det/src/conformance.rs`: every GPU and x86 op against the reference CPU backend bit for bit, edge
+  cases included; `det conformance` runs the same suites on an installed build). End to end: `det generate
+  <gguf> --backend ref --logits a.bin` vs the x86 (`--backend cpu`) and GPU runs and `cmp`.
 - Input-controlled failures (token ids, lengths, parameters, file contents) are errors, never panics or
   aborts, on every path a consumer can reach.
 - Each GPU runtime is one global in-order queue: GPU tests take a mutex, and benchmarks warm up first

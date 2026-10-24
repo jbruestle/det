@@ -41,9 +41,11 @@ impl<T: Copy> Buf<T> {
     pub unsafe fn view(ptr: *mut T, len: usize) -> Self {
         Buf { ptr, len, owner: Owner::View, _p: PhantomData }
     }
+    /// A zeroed host buffer, 64-byte aligned.
     pub fn new_host(len: usize) -> Self {
-        let v: Vec<T> = vec![unsafe { std::mem::zeroed() }; len];
-        let ptr = Box::into_raw(v.into_boxed_slice()) as *mut T;
+        let layout = host_layout::<T>(len);
+        let ptr = if layout.size() == 0 { layout.align() as *mut T } else { unsafe { std::alloc::alloc_zeroed(layout) as *mut T } };
+        assert!(!ptr.is_null(), "allocation of {} bytes failed", layout.size());
         Buf { ptr, len, owner: Owner::Host, _p: PhantomData }
     }
     pub fn host_from(data: &[T]) -> Self {
@@ -85,10 +87,19 @@ impl<T: Copy> Buf<T> {
     }
 }
 
+fn host_layout<T>(len: usize) -> std::alloc::Layout {
+    std::alloc::Layout::array::<T>(len).unwrap().align_to(64).unwrap().pad_to_align()
+}
+
 impl<T> Drop for Buf<T> {
     fn drop(&mut self) {
         match self.owner {
-            Owner::Host => unsafe { drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(self.ptr, self.len))) },
+            Owner::Host => {
+                let layout = host_layout::<T>(self.len);
+                if layout.size() != 0 {
+                    unsafe { std::alloc::dealloc(self.ptr as *mut u8, layout) }
+                }
+            }
             Owner::Device(f) => unsafe { f(self.ptr as *mut u8) },
             Owner::View => {}
         }

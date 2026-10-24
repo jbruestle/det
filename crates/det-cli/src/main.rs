@@ -8,7 +8,7 @@ const DEFAULT_BACKEND: &str = if cfg!(target_os = "linux") { "cuda" } else if cf
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det conformance [--backend metal|cuda]   (every GPU op against the CPU reference, bit for bit; exit code 1 on a mismatch)\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
+        "usage:\n  det convert <float.gguf> [--out det.gguf] [--bits 6,ffn_down=8,...] [--rope-positions N] [--no-calibrate]\n  det generate <model.gguf> [--prompt TEXT|@file | --ids 1,2,3|@file] [--chat] [--n 64] [--temp T] [--top-k K] [--top-p P] [--seed S]\n               [--backend cpu|ref|metal|cuda (default: the GPU backend built in)] [--ctx 8192] [--batch 256] [--logits out.bin] [--dump]\n  det calibrate <model.gguf> [--out calibrated.gguf] [--random 512]   (default: rewrites the file in place)\n  det bench <model.gguf> [--pp 512] [--tg 128] [--batch 256] [--gemm]\n  det ppl <model.gguf> <text.txt> [--ctx 2048] [--chunks 8] [--batch 512]\n  det conformance [--backend cpu|metal|cuda]   (every op of the backend against the reference, bit for bit; exit code 1 on a mismatch)\n  det info <model.gguf>\n  det tensor <model.gguf> <name> [n]\n  det tokens <model.gguf> <from> <to>"
     );
     std::process::exit(2)
 }
@@ -186,7 +186,7 @@ fn generate<B: Backend>(a: &Args, path: &Path, backend: B) {
 }
 
 /// Runs the conformance suites of the GPU backend against the CPU reference and prints every check.
-fn conformance<B: Backend>(backend: B, prim: det::conformance::Prim) -> ! {
+fn conformance<B: Backend>(backend: B, prim: Option<det::conformance::Prim>) -> ! {
     let t0 = Instant::now();
     let r = det::conformance::run(&backend, prim);
     for (name, mismatch) in &r.checks {
@@ -401,11 +401,13 @@ fn main() {
             };
         }
         "conformance" => match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
+            #[cfg(target_arch = "x86_64")]
+            "cpu" if det::x86::X86::available() => conformance(det::x86::X86::new(), None),
             #[cfg(target_os = "macos")]
-            "metal" => conformance(det::metal::Metal::new(), &det::metal::test_prim),
+            "metal" => conformance(det::metal::Metal::new(), Some(&det::metal::test_prim)),
             #[cfg(target_os = "linux")]
-            "cuda" => conformance(det::cuda::Cuda::new(), &det::cuda::test_prim),
-            other => panic!("conformance needs a GPU backend ({other} is not one, or is not built in)"),
+            "cuda" => conformance(det::cuda::Cuda::new(), Some(&det::cuda::test_prim)),
+            other => panic!("conformance checks a GPU or x86 backend against the reference ({other} is not one, or is not built in)"),
         },
         "info" => return info(Path::new(pos(1))),
         "tensor" => return tensor(Path::new(pos(1)), pos(2), a.pos.get(3).map_or(8, |v| v.parse().unwrap())),
@@ -425,7 +427,9 @@ fn main() {
         };
     }
     match a.opt("backend").unwrap_or(DEFAULT_BACKEND) {
-        "cpu" => run!(det::cpu::Cpu),
+        #[cfg(target_arch = "x86_64")]
+        "cpu" if det::x86::X86::available() => run!(det::x86::X86::new()),
+        "cpu" | "ref" => run!(det::cpu::Cpu),
         #[cfg(target_os = "macos")]
         "metal" => run!(det::metal::Metal::new()),
         #[cfg(target_os = "linux")]

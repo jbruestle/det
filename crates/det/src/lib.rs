@@ -17,6 +17,8 @@ pub mod quantize;
 pub mod qwen35;
 pub mod spec;
 pub mod tokenizer;
+#[cfg(target_arch = "x86_64")]
+pub mod x86;
 
 pub use backend::{Backend, Buf};
 pub use config::Config;

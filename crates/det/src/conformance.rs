@@ -1,4 +1,4 @@
-//! Backend conformance: every op of a backend against the CPU backend (the spec applied row by row) on
+//! Backend conformance: every op of a backend against the reference CPU backend (the spec applied row by row) on
 //! random inputs and on the edge cases of the numerics (denormal and zero rows, a GDN state decaying
 //! through the denormal range, ties, degenerate sampling parameters), bit for bit. `det conformance`
 //! runs it on an installed build; `tests/backends.rs` runs it under cargo.
@@ -121,10 +121,13 @@ fn acts(rng: &mut Rng, cpu: &Cpu, m: usize, k: usize) -> (Buf<i8>, Buf<f32>, Buf
     (xq, sx, mx)
 }
 
-/// Everything, in order.
-pub fn run<B: Backend>(gpu: &B, prim: Prim) -> Report {
+/// Everything, in order (`prim` is the GPU backends' primitive hook; the x86 backend has none, its
+/// primitives are reached through the ops).
+pub fn run<B: Backend>(gpu: &B, prim: Option<Prim>) -> Report {
     let mut r = Report::default();
-    primitives(prim, &mut r);
+    if let Some(prim) = prim {
+        primitives(prim, &mut r);
+    }
     gemm(gpu, &mut r);
     norms(gpu, &mut r);
     attention(gpu, &mut r);
